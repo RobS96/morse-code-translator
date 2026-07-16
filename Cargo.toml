@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["morse-core", "morse-cli", "morse-gui"]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/RobS96/Morse-Code-Translator-"
+authors = ["RobS96"]
+
+[profile.release]
+opt-level = 3
+lto = true

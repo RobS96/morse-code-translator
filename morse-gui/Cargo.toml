@@ -1,0 +1,17 @@
+[package]
+name = "morse-gui"
+description = "Cross-platform desktop GUI (Windows/macOS/Linux) for the Morse code translator, with live visual flash + audible tone transmission."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "morse-gui"
+path = "src/main.rs"
+
+[dependencies]
+morse-core = { path = "../morse-core" }
+eframe = "0.24"
+rodio = { version = "0.17", default-features = false }
