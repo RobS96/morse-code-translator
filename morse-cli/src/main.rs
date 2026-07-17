@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use std::thread::sleep;
 use std::time::Duration;
 
-use morse_core::{build_signal_plan, decode, encode, Signal, UNIT_MS};
+use morse_core::{Signal, UNIT_MS, build_signal_plan, decode, encode};
 
 fn usage(prog: &str) -> String {
     format!(

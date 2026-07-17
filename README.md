@@ -1,8 +1,8 @@
 # Morse Code Translator
 
-[![CI](https://github.com/RobS96/Morse-Code-Translator-/actions/workflows/ci.yml/badge.svg)](https://github.com/RobS96/Morse-Code-Translator-/actions/workflows/ci.yml)
+[![CI](https://github.com/RobS96/morse-code-translator/actions/workflows/ci.yml/badge.svg)](https://github.com/RobS96/morse-code-translator/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-2021-orange.svg)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](https://www.rust-lang.org)
 
 Encode, decode, and **transmit** Morse code — as a terminal tool or a
 native desktop app — on **Windows, macOS, and Linux**. "Transmit" flashes
@@ -41,7 +41,7 @@ Dash = long flash/beep   (3 units)
 Requires the [Rust toolchain](https://rustup.rs) (stable).
 
 ```bash
-git clone https://github.com/RobS96/Morse-Code-Translator-.git && cd Morse-Code-Translator-
+git clone https://github.com/RobS96/morse-code-translator.git && cd morse-code-translator
 ```
 
 **Linux only** — the GUI needs windowing/audio headers to *build*:
@@ -65,9 +65,16 @@ Binaries land in `target/release/`:
 
 ### Pre-built binaries
 
-Tagged releases publish binaries for Windows, macOS, and Linux under
-[Releases](https://github.com/RobS96/Morse-Code-Translator-/releases) —
+Tagged releases publish binaries for Windows, macOS (universal), and
+Linux under
+[Releases](https://github.com/RobS96/morse-code-translator/releases) —
 no Rust toolchain needed.
+
+Alternatively, install just the CLI straight from a clone:
+
+```bash
+cargo install --path morse-cli
+```
 
 ## Usage — CLI
 

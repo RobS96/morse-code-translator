@@ -6,7 +6,7 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-07-16
+## [0.2.0] - 2026-07-17
 
 ### Added
 
@@ -26,6 +26,10 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 - `morse-core`'s encode/decode logic is now fully decoupled from I/O, so it
   is shared verbatim between the CLI and GUI.
+- Rust edition 2021 → 2024.
+- macOS release binaries are now universal (x86_64 + arm64 via `lipo`).
+- Repository renamed `Morse-Code-Translator-` → `morse-code-translator`
+  (GitHub redirects the old URL).
 
 ## [0.1.0] - 2026-07-16
 

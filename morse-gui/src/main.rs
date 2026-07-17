@@ -3,13 +3,13 @@
 //! type text or Morse, see the translation instantly, and hit "Transmit"
 //! to watch a flashing lamp and hear a tone play out the real timing.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
 use eframe::egui;
-use morse_core::{build_signal_plan, decode, encode, Signal, UNIT_MS};
+use morse_core::{Signal, UNIT_MS, build_signal_plan, decode, encode};
 use rodio::source::{SineWave, Source};
 use rodio::{OutputStream, Sink};
 

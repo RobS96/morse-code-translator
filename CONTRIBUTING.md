@@ -17,7 +17,7 @@ If you're changing core Morse logic (tables, timing ratios), it belongs in
 ## Setup
 
 ```bash
-git clone https://github.com/RobS96/Morse-Code-Translator-.git && cd Morse-Code-Translator-
+git clone https://github.com/RobS96/morse-code-translator.git && cd morse-code-translator
 ```
 
 **Linux only** — install GUI/audio headers before building `morse-gui`:
