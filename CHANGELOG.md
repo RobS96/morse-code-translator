@@ -31,6 +31,12 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - Repository renamed `Morse-Code-Translator-` → `morse-code-translator`
   (GitHub redirects the old URL).
 
+### Fixed
+
+- `morse-gui` failed to compile on Windows (`eframe` 0.24 uses `winapi`
+  features it doesn't declare) — fixed via an explicit `winapi` feature
+  declaration; caught by the first real CI run.
+
 ## [0.1.0] - 2026-07-16
 
 ### Added

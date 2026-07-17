@@ -15,3 +15,8 @@ path = "src/main.rs"
 morse-core = { path = "../morse-core" }
 eframe = "0.24"
 rodio = { version = "0.17", default-features = false }
+
+# eframe 0.24's Windows app-icon code uses winapi items without declaring
+# the features; declaring them here lets feature unification fix the build.
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winuser", "windef"] }
