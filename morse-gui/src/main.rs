@@ -11,7 +11,7 @@ use std::time::Duration;
 use eframe::egui;
 use morse_core::{Signal, UNIT_MS, build_signal_plan, decode, encode};
 use rodio::source::{SineWave, Source};
-use rodio::{OutputStream, Sink};
+use rodio::{DeviceSinkBuilder, Player};
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -80,21 +80,18 @@ impl MorseApp {
         is_transmitting.store(true, Ordering::SeqCst);
 
         thread::spawn(move || {
-            // One audio output per transmission; kept alive for the
+            // One audio device sink per transmission; kept alive for the
             // thread's lifetime so tones don't get cut off.
-            let stream = OutputStream::try_default();
-            let sink = stream
-                .as_ref()
-                .ok()
-                .and_then(|(_, handle)| Sink::try_new(handle).ok());
+            let device_sink = DeviceSinkBuilder::open_default_sink().ok();
+            let player = device_sink.as_ref().map(|d| Player::connect_new(d.mixer()));
 
             for signal in build_signal_plan(&text) {
                 if signal.is_tone() {
                     let dur = Duration::from_millis(signal.duration_ms(unit_ms));
                     is_lit.store(true, Ordering::SeqCst);
-                    if let Some(sink) = &sink {
+                    if let Some(player) = &player {
                         let tone = SineWave::new(600.0).take_duration(dur).amplify(0.20);
-                        sink.append(tone);
+                        player.append(tone);
                     }
                     thread::sleep(dur);
                     is_lit.store(false, Ordering::SeqCst);
@@ -104,8 +101,8 @@ impl MorseApp {
                     thread::sleep(Duration::from_millis(signal.duration_ms(unit_ms)));
                 }
             }
-            if let Some(sink) = &sink {
-                sink.sleep_until_end();
+            if let Some(player) = &player {
+                player.sleep_until_end();
             }
             is_transmitting.store(false, Ordering::SeqCst);
         });

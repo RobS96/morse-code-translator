@@ -24,7 +24,7 @@ eframe = { version = "0.36", default-features = false, features = [
     "wayland",
     "x11",
 ] }
-rodio = { version = "0.17", default-features = false }
+rodio = { version = "0.22", default-features = false, features = ["playback"] }
 
 # eframe 0.24's Windows app-icon code uses winapi items without declaring
 # the features; declaring them here lets feature unification fix the build.
