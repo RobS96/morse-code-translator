@@ -21,7 +21,7 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Morse Code Translator",
         options,
-        Box::new(|_cc| Box::<MorseApp>::default()),
+        Box::new(|_cc| Ok(Box::<MorseApp>::default())),
     )
 }
 
@@ -110,13 +110,13 @@ impl MorseApp {
 }
 
 impl eframe::App for MorseApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let transmitting = self.is_transmitting.load(Ordering::SeqCst);
         if transmitting {
-            ctx.request_repaint(); // keep animating the lamp
+            ui.ctx().request_repaint(); // keep animating the lamp
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("Morse Code Translator");
             ui.add_space(8.0);
 

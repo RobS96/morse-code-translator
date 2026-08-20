@@ -13,7 +13,17 @@ path = "src/main.rs"
 
 [dependencies]
 morse-core = { path = "../morse-core" }
-eframe = "0.24"
+# wgpu is eframe's default renderer as of 0.3x; this app is simple immediate-mode
+# 2D UI with no need for it, and wgpu's Direct3D12 backend has a windows-crate
+# version conflict on Windows CI as of eframe 0.36.1 — stick with glow instead.
+eframe = { version = "0.36", default-features = false, features = [
+    "glow",
+    "default_fonts",
+    "accesskit",
+    "links",
+    "wayland",
+    "x11",
+] }
 rodio = { version = "0.22", default-features = false, features = ["playback"] }
 
 # eframe 0.24's Windows app-icon code uses winapi items without declaring
