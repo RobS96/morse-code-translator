@@ -1,0 +1,16 @@
+# cargo-deny config — the build gate runs `cargo deny check advisories bans`.
+# Kept minimal; advisories (RUSTSEC) is the security-relevant gate.
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
