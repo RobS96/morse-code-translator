@@ -6,6 +6,27 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Farnsworth timing: characters transmit at one WPM speed while
+  letter/word gaps stretch to a slower "effective" WPM — the method
+  recommended by the ARRL and CW Academy for learning Morse. New
+  `morse_core::Timing` type, `Signal::duration_ms_timed`, and
+  `wpm_to_unit_ms`; exposed as `--wpm`/`--farnsworth-wpm` in `morse-cli`
+  and a speed slider + Farnsworth toggle in `morse-gui`.
+- Procedural sign ("prosign") support — `<AR>`, `<SK>`, `<BT>`, `<KN>`,
+  `<AS>`, `<CT>`, `<BK>`, `<SN>` — encoded as a single fused character with
+  no inter-letter gap, matching real on-air Morse convention. `morse-gui`
+  adds one-click prosign insert buttons in Encode mode.
+- `morse-gui`: copy-to-clipboard button for the result field, WPM-based
+  speed controls (replacing raw millisecond-per-unit), redesigned layout.
+
+### Changed
+
+- `morse-core`'s letter tables build once via `std::sync::LazyLock`
+  instead of being reconstructed into a new `HashMap` on every
+  `encode`/`decode`/`build_signal_plan` call.
+
 ## [0.2.0] - 2026-07-17
 
 ### Added

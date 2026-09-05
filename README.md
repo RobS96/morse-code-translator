@@ -82,13 +82,40 @@ cargo install --path morse-cli
 morse encode "SOS"                 # -> ... --- ...
 morse decode "... --- ..."         # -> SOS
 morse transmit "HELLO WORLD"       # flashes + beeps it live in your terminal
-morse transmit "SOS" -u 60         # faster: 60ms per unit (default 100)
+morse transmit "SOS" --wpm 25      # faster: 25 words-per-minute
+morse transmit "SOS" -u 60         # or set the raw unit length directly (ms)
 ```
 
 Multi-word Morse uses `/` as the word separator:
 
 ```bash
 morse decode ".... .. / - .... . .-. ."   # -> HI THERE
+```
+
+**Procedural signs ("prosigns").** Common ham-radio prosigns — `<AR>`
+(end of message), `<SK>` (end of contact), `<BT>` (new paragraph/break),
+`<KN>` (over to a specific station), `<AS>` (wait), `<CT>` (start
+copying), `<BK>`, `<SN>` — encode as a single fused character with no
+inter-letter gap, matching how they're actually sent on the air:
+
+```bash
+morse encode "CQ CQ DE W1AW <KN>"
+```
+
+> Some prosigns (`AR`, `AS`, `BT`, `KN`) happen to share their fused code
+> with an existing punctuation mark (`+`, `&`, `=`, `(`) — that's real
+> Morse, not a bug here: historically, prosigns were built by fusing
+> letter pairs that already had a code. Out of context the two readings
+> are genuinely indistinguishable on the air, so `decode` resolves the
+> ambiguity toward the punctuation reading.
+
+**Farnsworth timing.** Recommended by the ARRL and CW Academy for
+*learning* Morse: characters play at a brisk, natural speed while the
+pauses between letters/words stretch out, giving you recognition time
+without encouraging you to count dits and dahs:
+
+```bash
+morse transmit "PARIS" --wpm 20 --farnsworth-wpm 5   # 20 WPM characters, 5 WPM spacing
 ```
 
 ## Usage — GUI
@@ -100,7 +127,11 @@ cargo run --release -p morse-gui
 ```
 
 - Type text (or Morse) — the translation updates live.
-- Drag the speed slider to change ms/unit.
+- In Encode mode, click a prosign chip (`<AR>`, `<SK>`, ...) to insert it.
+- Hit **📋 Copy** to copy the translated result to your clipboard.
+- Drag the **Character speed** slider (in WPM); tick **Farnsworth
+  timing** to reveal a second, slower **Effective speed** slider for the
+  letter/word gaps.
 - Hit **▶ Transmit** — the lamp flashes and a tone plays in sync.
 
 ## Try it hands-on
