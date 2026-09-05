@@ -20,6 +20,20 @@ private = { ignore = true }
 [bans]
 multiple-versions = "warn"
 wildcards = "warn"
+skip = [
+    # thiserror 1.0.69 (+ thiserror-impl 1.0.69): pulled in only by winit's
+    # Linux/Wayland backend chain (calloop -> smithay-client-toolkit -> winit),
+    # inert on macOS — Cargo.lock resolves it because it covers all target
+    # platforms, not because it's compiled into this app's binary. The rest of
+    # the tree (and this backend chain's own newer deps) is on thiserror 2.x;
+    # upstream (eframe/winit's own tree) hasn't converged versions yet. Flagged
+    # as recurring/undocumented by nightly-error-audit 2026-09-05 — documenting
+    # here rather than re-investigating it each time it shows up in cargo-deny
+    # output. Re-evaluate if winit's Linux backend ever actually gets exercised
+    # on this estate (it isn't — macOS only).
+    { name = "thiserror", version = "1.0.69" },
+    { name = "thiserror-impl", version = "1.0.69" },
+]
 
 [sources]
 unknown-registry = "deny"
