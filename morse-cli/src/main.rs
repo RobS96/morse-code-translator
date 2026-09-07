@@ -1,10 +1,15 @@
+#![forbid(unsafe_code)]
+
 use std::env;
 use std::io::{self, Write};
 use std::process::ExitCode;
 use std::thread::sleep;
 use std::time::Duration;
 
-use morse_core::{Signal, Timing, UNIT_MS, build_signal_plan, decode, encode, wpm_to_unit_ms};
+use morse_core::{
+    MAX_UNIT_MS, MIN_UNIT_MS, Signal, Timing, UNIT_MS, build_signal_plan, decode, encode,
+    wpm_to_unit_ms,
+};
 
 fn usage(prog: &str) -> String {
     format!(
@@ -34,26 +39,60 @@ fn flag_value<'a>(args: &'a [String], names: &[&str]) -> Option<&'a str> {
         .map(String::as_str)
 }
 
+/// Resolve one side (character or gap) of the transmit timing: the named
+/// `--*-wpm` flag takes precedence when given, falling back to the raw
+/// `-u`/`-g` millisecond flags, and finally to `default`.
+///
+/// Every value is validated rather than silently ignored on a parse
+/// failure: a fat-fingered `--wpm abc` or an out-of-range `-u
+/// 99999999999999` is a usage error, not a value quietly swapped for a
+/// default the user didn't ask for.
+fn resolve_unit_ms(
+    args: &[String],
+    wpm_flag: &str,
+    raw_flags: &[&str],
+    default: u64,
+) -> Result<u64, String> {
+    if let Some(v) = flag_value(args, &[wpm_flag]) {
+        let wpm: f64 = v
+            .parse()
+            .map_err(|_| format!("{wpm_flag} expects a number, got {v:?}"))?;
+        if !wpm.is_finite() || wpm <= 0.0 {
+            return Err(format!("{wpm_flag} must be a positive number, got {v:?}"));
+        }
+        return Ok(wpm_to_unit_ms(wpm));
+    }
+    if let Some(v) = flag_value(args, raw_flags) {
+        let ms: u64 = v
+            .parse()
+            .map_err(|_| format!("{} expects a whole number of ms, got {v:?}", raw_flags[0]))?;
+        if !(MIN_UNIT_MS..=MAX_UNIT_MS).contains(&ms) {
+            return Err(format!(
+                "{} must be between {MIN_UNIT_MS} and {MAX_UNIT_MS} ms, got {ms}",
+                raw_flags[0]
+            ));
+        }
+        return Ok(ms);
+    }
+    Ok(default)
+}
+
 /// Resolve transmit timing from CLI flags: `--wpm`/`--farnsworth-wpm` take
 /// precedence when given, falling back to raw `-u`/`-g` millisecond values,
 /// and finally to standard (non-Farnsworth) timing at [`UNIT_MS`].
-fn resolve_timing(args: &[String]) -> Timing {
-    let char_unit_ms = flag_value(args, &["--wpm"])
-        .and_then(|v| v.parse::<f64>().ok())
-        .map(wpm_to_unit_ms)
-        .or_else(|| flag_value(args, &["-u", "--unit-ms"]).and_then(|v| v.parse().ok()))
-        .unwrap_or(UNIT_MS);
+fn resolve_timing(args: &[String]) -> Result<Timing, String> {
+    let char_unit_ms = resolve_unit_ms(args, "--wpm", &["-u", "--unit-ms"], UNIT_MS)?;
+    let gap_unit_ms = resolve_unit_ms(
+        args,
+        "--farnsworth-wpm",
+        &["-g", "--gap-unit-ms"],
+        char_unit_ms,
+    )?;
 
-    let gap_unit_ms = flag_value(args, &["--farnsworth-wpm"])
-        .and_then(|v| v.parse::<f64>().ok())
-        .map(wpm_to_unit_ms)
-        .or_else(|| flag_value(args, &["-g", "--gap-unit-ms"]).and_then(|v| v.parse().ok()))
-        .unwrap_or(char_unit_ms);
-
-    Timing {
+    Ok(Timing {
         char_unit_ms,
         gap_unit_ms,
-    }
+    })
 }
 
 fn main() -> ExitCode {
@@ -74,10 +113,17 @@ fn main() -> ExitCode {
             println!("{}", decode(arg));
             ExitCode::SUCCESS
         }
-        "transmit" => {
-            transmit(arg, resolve_timing(&args));
-            ExitCode::SUCCESS
-        }
+        "transmit" => match resolve_timing(&args) {
+            Ok(timing) => {
+                transmit(arg, timing);
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("morse: {err}\n");
+                eprint!("{}", usage(prog));
+                ExitCode::FAILURE
+            }
+        },
         _ => {
             eprint!("{}", usage(prog));
             ExitCode::FAILURE
@@ -108,10 +154,12 @@ fn transmit(text: &str, timing: Timing) {
             // \x07 = terminal bell (audible beep in most terminal apps).
             // \x1b[7m..\x1b[0m briefly inverts the colors for a visual flash.
             print!("\x07\x1b[7m  \x1b[0m");
-            out.flush().unwrap();
+            // Ignore the error: a closed stdout (e.g. piping into `head`)
+            // should end the transmission quietly, not panic.
+            let _ = out.flush();
             sleep(Duration::from_millis(signal.duration_ms_timed(timing)));
             print!("\r    \r");
-            out.flush().unwrap();
+            let _ = out.flush();
             // 1-unit gap after every symbol, at character speed.
             sleep(Duration::from_millis(timing.char_unit_ms));
         } else {
@@ -122,4 +170,66 @@ fn transmit(text: &str, timing: Timing) {
         }
     }
     println!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(rest: &[&str]) -> Vec<String> {
+        std::iter::once("morse".to_string())
+            .chain(rest.iter().map(|s| s.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn defaults_to_uniform_unit_ms_with_no_flags() {
+        let timing = resolve_timing(&args(&["transmit", "SOS"])).unwrap();
+        assert_eq!(timing.char_unit_ms, UNIT_MS);
+        assert_eq!(timing.gap_unit_ms, UNIT_MS);
+    }
+
+    #[test]
+    fn wpm_flag_sets_both_char_and_gap_unit_ms() {
+        let timing = resolve_timing(&args(&["transmit", "SOS", "--wpm", "20"])).unwrap();
+        assert_eq!(timing.char_unit_ms, 60);
+        assert_eq!(timing.gap_unit_ms, 60);
+    }
+
+    #[test]
+    fn farnsworth_wpm_only_stretches_the_gap_side() {
+        let timing = resolve_timing(&args(&[
+            "transmit",
+            "SOS",
+            "--wpm",
+            "20",
+            "--farnsworth-wpm",
+            "5",
+        ]))
+        .unwrap();
+        assert_eq!(timing.char_unit_ms, 60);
+        assert_eq!(timing.gap_unit_ms, 240);
+    }
+
+    #[test]
+    fn zero_wpm_is_a_usage_error_not_a_silent_hang() {
+        let err = resolve_timing(&args(&["transmit", "SOS", "--wpm", "0"])).unwrap_err();
+        assert!(err.contains("--wpm"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn negative_wpm_is_a_usage_error() {
+        assert!(resolve_timing(&args(&["transmit", "SOS", "--wpm", "-5"])).is_err());
+    }
+
+    #[test]
+    fn non_numeric_wpm_is_a_usage_error_not_a_silently_ignored_default() {
+        assert!(resolve_timing(&args(&["transmit", "SOS", "--wpm", "fast"])).is_err());
+    }
+
+    #[test]
+    fn absurdly_large_raw_unit_ms_is_rejected() {
+        let err = resolve_timing(&args(&["transmit", "SOS", "-u", "99999999999999"])).unwrap_err();
+        assert!(err.contains("-u"), "unexpected error: {err}");
+    }
 }
