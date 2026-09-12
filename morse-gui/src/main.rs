@@ -4,6 +4,7 @@
 //! to watch a flashing lamp and hear a tone play out the real timing —
 //! optionally with Farnsworth timing (fast characters, slower spacing),
 //! the internationally recommended way to learn Morse.
+#![forbid(unsafe_code)]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

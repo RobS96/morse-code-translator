@@ -59,9 +59,17 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo install cargo-deny cargo-vet --locked
 
-      - name: Supply-chain advisories/bans gate
+      # Full `cargo deny check` (advisories/bans/licenses/sources), not just
+      # advisories+bans -- deny.toml configures all four categories
+      # (license allowlist, unknown-registry/unknown-git source restrictions
+      # included), and a narrower invocation would silently stop enforcing
+      # the two categories it omits. 2026-09-12: reconciled with an earlier
+      # unmerged branch that ran the same full check as a separate job --
+      # folded here instead of restoring the second job, since this step
+      # already covers everything it did.
+      - name: Supply-chain advisories/bans/licenses/sources gate
         if: matrix.os == 'ubuntu-latest'
-        run: cargo deny check advisories bans
+        run: cargo deny check
 
       - name: Supply-chain provenance gate
         if: matrix.os == 'ubuntu-latest'

@@ -27,6 +27,24 @@ versioning follows [Semantic Versioning](https://semver.org/).
   instead of being reconstructed into a new `HashMap` on every
   `encode`/`decode`/`build_signal_plan` call.
 
+### Security
+
+- `wpm_to_unit_ms` now clamps its result to a `MIN_UNIT_MS..=MAX_UNIT_MS`
+  range: a zero, negative, NaN, or infinite WPM previously divided out to
+  `+inf`, which a saturating float-to-int cast turned into a
+  `u64::MAX`-millisecond ("effectively forever") sleep on `transmit`.
+- `Signal::duration_ms_timed` uses saturating multiplication, so an
+  extreme raw `-u`/`-g` unit length can no longer overflow into a panic
+  (debug) or a silently wrong, tiny duration (release).
+- `morse-cli`'s `--wpm`/`--farnsworth-wpm`/`-u`/`-g` flags are now
+  validated: a non-numeric or out-of-range value is a usage error (clear
+  message, non-zero exit) instead of being silently swapped for a default.
+- Added `#![forbid(unsafe_code)]` to all three crates.
+- CI now runs `cargo deny check` (advisories/bans/licenses/sources) on
+  every push and PR, and gates the release job — previously `deny.toml`
+  existed but was only ever invoked by an external, unversioned local
+  script.
+
 ## [0.2.0] - 2026-07-17
 
 ### Added

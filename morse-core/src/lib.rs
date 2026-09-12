@@ -2,6 +2,7 @@
 //!
 //! Pure, side-effect-free encode/decode logic lives here so it can be
 //! unit tested without touching the terminal, audio, or timing.
+#![forbid(unsafe_code)]
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -9,12 +10,33 @@ use std::sync::LazyLock;
 /// One Morse "unit" in milliseconds. A dot is 1 unit, a dash is 3 units.
 pub const UNIT_MS: u64 = 100;
 
+/// Smallest unit length callers may use, in ms.
+pub const MIN_UNIT_MS: u64 = 1;
+/// Largest unit length callers may use, in ms (1 minute/unit — already far
+/// slower than any practical use). Bounding this keeps a zero/negative/NaN
+/// WPM or a huge raw millisecond value from producing a unit length so
+/// large that transmitting so much as a single dash sleeps for years, and
+/// keeps [`Signal::duration_ms_timed`]'s multiplication safely clear of
+/// `u64` overflow.
+pub const MAX_UNIT_MS: u64 = 60_000;
+
 /// Convert words-per-minute to a unit length in milliseconds using the
 /// standard PARIS-word timing formula (`unit_ms = 1200 / wpm`), the
 /// convention used by the ARRL and virtually every CW training program.
 /// See <https://morsecode.world/international/timing.html>.
+///
+/// A non-positive, NaN, or infinite `wpm` (e.g. `0.0`, which divides out
+/// to `+inf`) is treated as "as slow as we allow" rather than propagating
+/// the non-finite value — a saturating float-to-int cast would otherwise
+/// turn `+inf` into `u64::MAX` milliseconds, an effectively infinite hang.
+/// The result is always clamped to [`MIN_UNIT_MS`, `MAX_UNIT_MS`].
 pub fn wpm_to_unit_ms(wpm: f64) -> u64 {
-    (1200.0 / wpm).round().max(1.0) as u64
+    if !wpm.is_finite() || wpm <= 0.0 {
+        return MAX_UNIT_MS;
+    }
+    (1200.0 / wpm)
+        .round()
+        .clamp(MIN_UNIT_MS as f64, MAX_UNIT_MS as f64) as u64
 }
 
 /// A single timed event in a transmission: how long to signal "on" for,
@@ -81,9 +103,12 @@ impl Signal {
     pub fn duration_ms_timed(&self, timing: Timing) -> u64 {
         match self {
             Signal::Dot => timing.char_unit_ms,
-            Signal::Dash => timing.char_unit_ms * 3,
-            Signal::LetterGap => timing.gap_unit_ms * 2,
-            Signal::WordGap => timing.gap_unit_ms * 4,
+            // Saturating: callers may build a `Timing` directly (bypassing
+            // `wpm_to_unit_ms`'s clamp) with an arbitrary `u64`, and this
+            // must never wrap into a tiny, wrong duration or panic.
+            Signal::Dash => timing.char_unit_ms.saturating_mul(3),
+            Signal::LetterGap => timing.gap_unit_ms.saturating_mul(2),
+            Signal::WordGap => timing.gap_unit_ms.saturating_mul(4),
         }
     }
 
@@ -367,6 +392,29 @@ mod tests {
         // speed: 1200 / 20 = 60ms per unit.
         assert_eq!(wpm_to_unit_ms(20.0), 60);
         assert_eq!(wpm_to_unit_ms(12.0), 100);
+    }
+
+    #[test]
+    fn wpm_conversion_clamps_non_positive_and_non_finite_input() {
+        // These would otherwise divide out to +/-inf or NaN and, via a
+        // saturating float-to-int cast, silently become a u64::MAX-ms
+        // ("effectively forever") sleep instead of a bounded one.
+        for wpm in [0.0, -0.0, -5.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(wpm_to_unit_ms(wpm), MAX_UNIT_MS, "wpm = {wpm}");
+        }
+    }
+
+    #[test]
+    fn wpm_conversion_clamps_absurdly_high_wpm() {
+        assert_eq!(wpm_to_unit_ms(1_000_000.0), MIN_UNIT_MS);
+    }
+
+    #[test]
+    fn duration_does_not_overflow_on_a_huge_raw_unit_length() {
+        let timing = Timing::uniform(u64::MAX);
+        assert_eq!(Signal::Dash.duration_ms_timed(timing), u64::MAX);
+        assert_eq!(Signal::LetterGap.duration_ms_timed(timing), u64::MAX);
+        assert_eq!(Signal::WordGap.duration_ms_timed(timing), u64::MAX);
     }
 
     #[test]
