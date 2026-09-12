@@ -47,6 +47,26 @@ jobs:
       - name: Build
         run: cargo build --workspace --release
 
+      # Once per matrix run is enough — the dependency graph doesn't vary
+      # meaningfully across OS for this check (cargo-deny/cargo-vet resolve
+      # against the full --all-features graph regardless of host target).
+      # Installed via `cargo install` (compiles from crates.io), not a
+      # third-party Action — this repo's Actions policy only allows
+      # GitHub-owned/verified actions plus an explicit pattern list, and
+      # adding a new third-party action there would widen that trust
+      # boundary; a plain `run:` step doesn't need to.
+      - name: Install cargo-deny + cargo-vet
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo install cargo-deny cargo-vet --locked
+
+      - name: Supply-chain advisories/bans gate
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo deny check advisories bans
+
+      - name: Supply-chain provenance gate
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo vet check --locked
+
   release:
     name: Release (${{ matrix.label }})
     if: startsWith(github.ref, 'refs/tags/v')
