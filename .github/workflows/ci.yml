@@ -50,11 +50,14 @@ jobs:
       # Once per matrix run is enough — the dependency graph doesn't vary
       # meaningfully across OS for this check (cargo-deny/cargo-vet resolve
       # against the full --all-features graph regardless of host target).
+      # Installed via `cargo install` (compiles from crates.io), not a
+      # third-party Action — this repo's Actions policy only allows
+      # GitHub-owned/verified actions plus an explicit pattern list, and
+      # adding a new third-party action there would widen that trust
+      # boundary; a plain `run:` step doesn't need to.
       - name: Install cargo-deny + cargo-vet
         if: matrix.os == 'ubuntu-latest'
-        uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af # v2.87.11
-        with:
-          tool: cargo-deny,cargo-vet
+        run: cargo install cargo-deny cargo-vet --locked
 
       - name: Supply-chain advisories/bans gate
         if: matrix.os == 'ubuntu-latest'
