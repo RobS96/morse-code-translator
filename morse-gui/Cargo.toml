@@ -12,7 +12,7 @@ name = "morse-gui"
 path = "src/main.rs"
 
 [dependencies]
-morse-core = { path = "../morse-core" }
+morse-core = { path = "../morse-core", version = "0.2.0" }
 # wgpu is eframe's default renderer as of 0.3x; this app is simple immediate-mode
 # 2D UI with no need for it, and wgpu's Direct3D12 backend has a windows-crate
 # version conflict on Windows CI as of eframe 0.36.1 — stick with glow instead.
