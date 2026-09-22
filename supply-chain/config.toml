@@ -250,31 +250,31 @@ version = "0.1.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.ecolor]]
-version = "0.36.1"
+version = "0.36.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.eframe]]
-version = "0.36.1"
+version = "0.36.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.egui]]
-version = "0.36.1"
+version = "0.36.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.egui-wgpu]]
-version = "0.36.1"
+version = "0.36.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.egui-winit]]
-version = "0.36.1"
+version = "0.36.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.egui_glow]]
-version = "0.36.1"
+version = "0.36.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.emath]]
-version = "0.36.1"
+version = "0.36.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.endi]]
@@ -290,11 +290,11 @@ version = "0.7.12"
 criteria = "safe-to-deploy"
 
 [[exemptions.epaint]]
-version = "0.36.1"
+version = "0.36.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.epaint_default_fonts]]
-version = "0.36.1"
+version = "0.36.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.error-code]]
