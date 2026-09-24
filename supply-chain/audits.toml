@@ -1,7 +1,45 @@
 
 # cargo-vet audits file
 
-[audits]
+[[audits.enumflags2]]
+who = "Robert Shubert <robshubert96@gmail.com>"
+criteria = "safe-to-deploy"
+version = "0.7.12"
+
+[[audits.enumflags2_derive]]
+who = "Robert Shubert <robshubert96@gmail.com>"
+criteria = "safe-to-deploy"
+version = "0.7.12"
+
+[[audits.find-msvc-tools]]
+who = "Robert Shubert <robshubert96@gmail.com>"
+criteria = "safe-to-deploy"
+version = "0.1.11"
+
+[[audits.futures-core]]
+who = "Robert Shubert <robshubert96@gmail.com>"
+criteria = "safe-to-deploy"
+version = "0.3.34"
+
+[[audits.log]]
+who = "Robert Shubert <robshubert96@gmail.com>"
+criteria = "safe-to-deploy"
+version = "0.4.33"
+
+[[audits.pin-project-lite]]
+who = "Robert Shubert <robshubert96@gmail.com>"
+criteria = "safe-to-deploy"
+version = "0.2.17"
+
+[[audits.wasm-bindgen-macro]]
+who = "Robert Shubert <robshubert96@gmail.com>"
+criteria = "safe-to-deploy"
+version = "0.2.127"
+
+[[audits.wasm-bindgen-shared]]
+who = "Robert Shubert <robshubert96@gmail.com>"
+criteria = "safe-to-deploy"
+version = "0.2.127"
 
 [[trusted.async-trait]]
 criteria = "safe-to-deploy"
@@ -20,6 +58,12 @@ criteria = "safe-to-deploy"
 user-id = 6741 # Alice Ryhl (Darksonn)
 start = "2021-01-11"
 end = "2027-09-12"
+
+[[trusted.cc]]
+criteria = "safe-to-deploy"
+user-id = 55123 # rust-lang-owner
+start = "2022-10-29"
+end = "2027-09-21"
 
 [[trusted.cfg-if]]
 criteria = "safe-to-deploy"
