@@ -8,6 +8,17 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Non-Latin Morse alphabets: Cyrillic, Greek, Hebrew, Arabic, Persian,
+  Japanese (Wabun) and Korean, plus accented-Latin extensions on encode.
+  New `morse_core::Alphabet` (with `detect`, `from_name`, `native_name`)
+  and `encode_in` / `decode_in` / `build_signal_plan_in`. `encode` and
+  `build_signal_plan` now auto-detect the alphabet; `decode` stays Latin.
+  `morse-cli` gains `-a/--alphabet` and a `morse alphabets` command.
+- `morse-gui` interface translated into 12 languages (en, es, fr, de, it,
+  pt, ru, uk, el, ja, ko, zh-Hans) with a language picker, an alphabet
+  picker, and system-font fallbacks for scripts egui doesn't bundle.
+- Prosigns are now recognised in any case (`<sk>` as well as `<SK>`).
+
 - Farnsworth timing: characters transmit at one WPM speed while
   letter/word gaps stretch to a slower "effective" WPM — the method
   recommended by the ARRL and CW Academy for learning Morse. New

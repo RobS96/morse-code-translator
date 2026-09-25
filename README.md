@@ -118,6 +118,38 @@ without encouraging you to count dits and dahs:
 morse transmit "PARIS" --wpm 20 --farnsworth-wpm 5   # 20 WPM characters, 5 WPM spacing
 ```
 
+## Alphabets
+
+Besides International (Latin) Morse, the translator speaks the national
+Morse alphabets for **Cyrillic** (Russian standard, plus Ukrainian І/Є/Ї
+and Bulgarian Ъ), **Greek**, **Hebrew**, **Arabic**, **Persian**,
+**Japanese** (Wabun kana) and **Korean** (Hangul jamo). Digits and
+punctuation are shared; Arabic-Indic, Persian and full-width digits are
+accepted too.
+
+| | Encode (text → Morse) | Decode (Morse → text) |
+|---|---|---|
+| Alphabet choice | Detected from the text; override with `--alphabet` | `--alphabet`, default `latin`: the same dots and dashes mean different letters in each alphabet |
+| Normalisation | Lowercase, Greek tonos, Hebrew final letters, Ё, katakana, small kana, voiced kana (が → か + ゛) and Hangul syllables (한 → ㅎㅏㄴ) are all accepted | Hebrew final forms are restored at word ends and voiced kana are recomposed; Korean comes back as jamo, because regrouping jamo into syllables is ambiguous |
+| Accented Latin (Ä, Ñ, Ś, …) | Encoded with their extension codes | Decoded as plain ASCII: most extension codes are shared (Ä/Æ/Ą) or collide with prosigns |
+
+Arabic and Persian share letters but not codes (خ is `---` in Arabic and
+`-..-` in Persian). Text containing a Persian-only letter (پ چ ژ گ ک ی)
+is detected as Persian; anything else in Arabic script is detected as
+Arabic. Pass `-a persian` or `-a arabic` to be explicit.
+
+```bash
+morse alphabets                                        # list them
+morse encode "привет"                                  # .--. .-. .. .-- . -
+morse decode ".--. .-. .. .-- . -" --alphabet cyrillic # ПРИВЕТ
+morse encode "こんにちは"                                # ---- .-.-. -.-. ..-. -...
+morse decode "---- .-.-. -.-. ..-. -..." -a japanese    # こんにちは
+```
+
+Every table is parsed from the ITU-R M.1677-1-derived tables on Wikipedia
+(Korean from the Republic of Korea's radio-station operating regulation),
+and a unit test asserts no two letters in an alphabet share a code.
+
 ## Usage — GUI
 
 ```bash
@@ -133,6 +165,18 @@ cargo run --release -p morse-gui
   timing** to reveal a second, slower **Effective speed** slider for the
   letter/word gaps.
 - Hit **▶ Transmit** — the lamp flashes and a tone plays in sync.
+- Pick the **Alphabet** (auto-detected by default) and the interface
+  **Language**: English, Español, Français, Deutsch, Italiano, Português,
+  Русский, Українська, Ελληνικά, 日本語, 한국어 or 简体中文. The language
+  defaults from `LANGUAGE`/`LC_ALL`/`LC_MESSAGES`/`LANG`.
+- Hebrew, Arabic, Japanese, Korean and Chinese glyphs use a font from
+  your OS (Arial Unicode on macOS; Noto/DejaVu on Linux; Arial, Yu
+  Gothic, Malgun Gothic or Microsoft YaHei on Windows). Nothing is bundled
+  or downloaded. If none is found, a warning appears.
+- Limitation: egui has no right-to-left layout or Arabic letter shaping,
+  so Hebrew/Arabic/Persian *input* shows in logical order with unjoined
+  letters. The Morse output is unaffected. For the same reason the
+  interface itself isn't offered in RTL languages.
 
 ## Try it hands-on
 

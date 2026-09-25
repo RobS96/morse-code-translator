@@ -7,6 +7,9 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
+mod alphabets;
+pub use alphabets::Alphabet;
+
 /// One Morse "unit" in milliseconds. A dot is 1 unit, a dash is 3 units.
 pub const UNIT_MS: u64 = 100;
 
@@ -176,8 +179,62 @@ static TABLE: LazyLock<HashMap<char, &'static str>> = LazyLock::new(|| {
     ])
 });
 
-static REVERSE_TABLE: LazyLock<HashMap<&'static str, char>> =
-    LazyLock::new(|| TABLE.iter().map(|(&c, &code)| (code, c)).collect());
+/// Per-alphabet lookup tables: (encode map, decode map).
+///
+/// Encode: the ASCII table (so mixed text like "QTH Москва" works), then
+/// the alphabet's own letters, which win on any clash (Wabun's 、。（）).
+/// Latin also accepts accented extensions. Decode: shared digits and
+/// punctuation, Latin letters only for [`Alphabet::Latin`], then the
+/// alphabet's letters; the first letter listed for a code wins (so the
+/// Russian letter, not the Ukrainian/Bulgarian variant, is decoded).
+struct Tables {
+    encode: HashMap<char, &'static str>,
+    decode: HashMap<&'static str, char>,
+}
+
+static TABLES: LazyLock<HashMap<Alphabet, Tables>> = LazyLock::new(|| {
+    Alphabet::ALL
+        .iter()
+        .map(|&alphabet| {
+            let mut encode: HashMap<char, &'static str> = TABLE.clone();
+            if alphabet == Alphabet::Latin {
+                encode.extend(alphabets::LATIN_EXTENSIONS.iter().copied());
+            }
+            encode.extend(alphabet.letters().iter().copied());
+
+            let mut decode: HashMap<&'static str, char> = TABLE
+                .iter()
+                .filter(|(c, _)| alphabet == Alphabet::Latin || !c.is_alphabetic())
+                .map(|(&c, &code)| (code, c))
+                .collect();
+            let mut own: HashMap<&'static str, char> = HashMap::new();
+            for &(c, code) in alphabet.letters() {
+                own.entry(code).or_insert(c);
+            }
+            decode.extend(own);
+            (alphabet, Tables { encode, decode })
+        })
+        .collect()
+});
+
+/// Every table character `c` stands for under `alphabet`, uppercased and
+/// normalised (native digits, final forms, voiced kana, Hangul syllables).
+fn table_chars(c: char, alphabet: Alphabet) -> Vec<char> {
+    if let Some(d) = alphabets::ascii_digit(c) {
+        return vec![d];
+    }
+    c.to_uppercase()
+        .flat_map(|u| alphabets::expand(u, alphabet))
+        .collect()
+}
+
+fn codes_for_word(word: &str, alphabet: Alphabet) -> Vec<&'static str> {
+    let encode = &TABLES[&alphabet].encode;
+    word.chars()
+        .flat_map(|c| table_chars(c, alphabet))
+        .filter_map(|c| encode.get(&c).copied())
+        .collect()
+}
 
 /// Procedural signs ("prosigns"): pairs of letters conventionally sent
 /// fused together, with no inter-letter gap, and treated by operators as
@@ -210,20 +267,20 @@ static PROSIGNS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|
 static REVERSE_PROSIGNS: LazyLock<HashMap<&'static str, &'static str>> =
     LazyLock::new(|| PROSIGNS.iter().map(|(&name, &code)| (code, name)).collect());
 
-/// Split `<NAME>` prosign markers out of already-uppercased text, e.g.
+/// Split `<NAME>` prosign markers (any case) out of text, e.g.
 /// `"CQ <AR>"` -> `[Word("CQ"), Prosign("AR")]` per whitespace-separated word.
 enum Token<'a> {
     Word(&'a str),
     Prosign(&'a str),
 }
 
-fn tokenize(upper: &str) -> Vec<Token<'_>> {
+fn tokenize(text: &str) -> Vec<Token<'_>> {
     let mut tokens = Vec::new();
-    for word in upper.split_whitespace() {
+    for word in text.split_whitespace() {
         if let Some(name) = word.strip_prefix('<').and_then(|s| s.strip_suffix('>'))
-            && PROSIGNS.contains_key(name)
+            && let Some((&key, _)) = PROSIGNS.get_key_value(name.to_uppercase().as_str())
         {
-            tokens.push(Token::Prosign(name));
+            tokens.push(Token::Prosign(key));
             continue;
         }
         tokens.push(Token::Word(word));
@@ -232,34 +289,46 @@ fn tokenize(upper: &str) -> Vec<Token<'_>> {
 }
 
 /// Encode plain text into Morse, e.g. "SOS" -> "... --- ...".
-/// Unknown characters are dropped. Words stay separated by " / ".
-/// A `<NAME>` token (e.g. `<SK>`, `<AR>`) matching a known prosign is sent
-/// as a single fused character instead of being letter-decomposed.
+/// The alphabet is detected from the text ([`Alphabet::detect`]); use
+/// [`encode_in`] to choose it. Unknown characters are dropped. Words stay
+/// separated by " / ". A `<NAME>` token (e.g. `<SK>`, `<AR>`) matching a
+/// known prosign is sent as a single fused character instead of being
+/// letter-decomposed.
 pub fn encode(text: &str) -> String {
-    let upper = text.to_uppercase();
-    tokenize(&upper)
+    encode_in(text, Alphabet::detect(text))
+}
+
+/// [`encode`] with an explicit alphabet. Matters for Arabic vs Persian,
+/// which share letters but not codes.
+pub fn encode_in(text: &str, alphabet: Alphabet) -> String {
+    tokenize(text)
         .into_iter()
         .map(|token| match token {
             Token::Prosign(name) => PROSIGNS[name].to_string(),
-            Token::Word(word) => word
-                .chars()
-                .filter_map(|c| TABLE.get(&c).copied())
-                .collect::<Vec<_>>()
-                .join(" "),
+            Token::Word(word) => codes_for_word(word, alphabet).join(" "),
         })
         .collect::<Vec<_>>()
         .join(" / ")
 }
 
-/// Decode Morse back into text. Letters are space-separated, words
+/// Decode Morse back into Latin text. Letters are space-separated, words
 /// separated by "/". e.g. "... --- ..." -> "SOS". A fused code matching a
 /// known prosign (no internal spaces) decodes to its `<NAME>` form.
 pub fn decode(morse: &str) -> String {
-    morse
+    decode_in(morse, Alphabet::Latin)
+}
+
+/// [`decode`] into a chosen alphabet: the same dots and dashes mean
+/// different letters in each. Japanese recombines voiced kana (か゛ -> が),
+/// Hebrew restores word-final letter forms (מ -> ם at the end of a word);
+/// Korean yields jamo, since regrouping them into syllables is ambiguous.
+pub fn decode_in(morse: &str, alphabet: Alphabet) -> String {
+    let table = &TABLES[&alphabet].decode;
+    let text = morse
         .split('/')
         .map(|word| {
             word.split_whitespace()
-                .map(|code| match REVERSE_TABLE.get(code) {
+                .map(|code| match table.get(code) {
                     Some(&c) => c.to_string(),
                     None => match REVERSE_PROSIGNS.get(code) {
                         Some(&name) => format!("<{name}>"),
@@ -271,7 +340,12 @@ pub fn decode(morse: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .trim()
-        .to_string()
+        .to_string();
+    match alphabet {
+        Alphabet::Japanese => alphabets::compose_kana(&text),
+        Alphabet::Hebrew => alphabets::hebrew_final_forms(&text),
+        _ => text,
+    }
 }
 
 /// Turn text into a flat sequence of timed [`Signal`]s, ready for a
@@ -282,8 +356,12 @@ pub fn decode(morse: &str) -> String {
 /// every dot/dash regardless of Signal boundaries; only one [`Signal::LetterGap`]
 /// follows the whole fused prosign, not one per constituent letter.
 pub fn build_signal_plan(text: &str) -> Vec<Signal> {
-    let upper = text.to_uppercase();
-    let tokens = tokenize(&upper);
+    build_signal_plan_in(text, Alphabet::detect(text))
+}
+
+/// [`build_signal_plan`] with an explicit alphabet (see [`encode_in`]).
+pub fn build_signal_plan_in(text: &str, alphabet: Alphabet) -> Vec<Signal> {
+    let tokens = tokenize(text);
     let mut plan = Vec::new();
     let n = tokens.len();
 
@@ -296,13 +374,11 @@ pub fn build_signal_plan(text: &str) -> Vec<Signal> {
                 plan.push(Signal::LetterGap);
             }
             Token::Word(word) => {
-                for ch in word.chars() {
-                    if let Some(code) = TABLE.get(&ch) {
-                        for symbol in code.chars() {
-                            push_symbol(&mut plan, symbol);
-                        }
-                        plan.push(Signal::LetterGap);
+                for code in codes_for_word(word, alphabet) {
+                    for symbol in code.chars() {
+                        push_symbol(&mut plan, symbol);
                     }
+                    plan.push(Signal::LetterGap);
                 }
             }
         }
@@ -489,6 +565,118 @@ mod tests {
         // decomposed letter-by-letter like any other unrecognized token
         // would strip its brackets away (which aren't in the table).
         assert_eq!(encode("<ZZ>"), "--.. --..");
+    }
+
+    #[test]
+    fn non_latin_alphabets_round_trip() {
+        for (text, alphabet) in [
+            ("СОС ПРИВЕТ МИР", Alphabet::Cyrillic),
+            ("ΚΑΛΗΜΕΡΑ ΚΟΣΜΕ", Alphabet::Greek),
+            ("שלום עולם", Alphabet::Hebrew),
+            ("سلام عليكم", Alphabet::Arabic),
+            ("سلام پدر", Alphabet::Persian),
+            ("いろはにほへと", Alphabet::Japanese),
+            ("ㅎㅏㄴㄱㅡㄹ", Alphabet::Korean),
+        ] {
+            assert_eq!(
+                decode_in(&encode_in(text, alphabet), alphabet),
+                text,
+                "{alphabet:?}"
+            );
+            assert_eq!(Alphabet::detect(text), alphabet);
+            assert_eq!(
+                encode(text),
+                encode_in(text, alphabet),
+                "auto-detect for {alphabet:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn same_codes_decode_differently_per_alphabet() {
+        let morse = ".- / -...";
+        assert_eq!(decode_in(morse, Alphabet::Latin), "A B");
+        assert_eq!(decode_in(morse, Alphabet::Cyrillic), "А Б");
+        assert_eq!(decode_in(morse, Alphabet::Greek), "Α Β");
+        assert_eq!(decode_in(morse, Alphabet::Japanese), "い は");
+    }
+
+    #[test]
+    fn arabic_and_persian_share_letters_but_not_codes() {
+        // Kha (U+062E) is --- in Arabic Morse and -..- in Persian Morse.
+        assert_eq!(encode_in("خ", Alphabet::Arabic), "---");
+        assert_eq!(encode_in("خ", Alphabet::Persian), "-..-");
+    }
+
+    #[test]
+    fn lowercase_and_final_forms_encode() {
+        assert_eq!(encode("привет"), encode("ПРИВЕТ"));
+        // Final sigma uppercases to Σ; Hebrew final mem is sent as mem.
+        assert_eq!(encode("ς"), encode("Σ"));
+        assert_eq!(encode("ם"), encode("מ"));
+        assert_eq!(encode("ёж"), encode("ЕЖ"));
+        assert_eq!(encode("ά"), encode("Α"));
+    }
+
+    #[test]
+    fn japanese_voiced_kana_and_katakana() {
+        // が is sent as か + dakuten; katakana encodes like hiragana.
+        assert_eq!(encode("が"), ".-.. ..");
+        assert_eq!(encode("カタカナ"), encode("かたかな"));
+        assert_eq!(
+            decode_in(&encode("ばんごう"), Alphabet::Japanese),
+            "ばんごう"
+        );
+        assert_eq!(encode("、。"), ".-.-.- .-.-..");
+    }
+
+    #[test]
+    fn korean_syllables_encode_as_jamo() {
+        assert_eq!(encode("한글"), encode("ㅎㅏㄴㄱㅡㄹ"));
+        assert_eq!(decode_in(&encode("한글"), Alphabet::Korean), "ㅎㅏㄴㄱㅡㄹ");
+    }
+
+    #[test]
+    fn native_digits_use_shared_digit_codes() {
+        assert_eq!(encode("٣"), encode("3"));
+        assert_eq!(decode_in(&encode("٣"), Alphabet::Arabic), "3");
+    }
+
+    #[test]
+    fn latin_extensions_encode_but_decode_stays_ascii() {
+        assert_eq!(encode("Ñ"), "--.--");
+        assert_eq!(encode("straße"), encode("STRASSE"));
+        // Ŝ shares its code with the SN prosign; decode keeps the prosign.
+        assert_eq!(decode("...-."), "<SN>");
+    }
+
+    #[test]
+    fn mixed_script_text_keeps_latin_letters() {
+        assert_eq!(
+            encode_in("QTH МОСКВА", Alphabet::Cyrillic),
+            format!("{} / {}", encode("QTH"), encode("МОСКВА"))
+        );
+    }
+
+    #[test]
+    fn prosigns_work_in_any_case_and_alphabet() {
+        assert_eq!(encode("<sk>"), "...-.-");
+        assert_eq!(
+            encode_in("МИР <SK>", Alphabet::Cyrillic)
+                .rsplit(" / ")
+                .next(),
+            Some("...-.-")
+        );
+    }
+
+    #[test]
+    fn signal_plan_matches_encoding_for_non_latin_text() {
+        let dots = |plan: Vec<Signal>| plan.iter().filter(|s| s.is_tone()).count();
+        let symbols = encode("한글")
+            .chars()
+            .filter(|c| *c == '.' || *c == '-')
+            .count();
+        assert_eq!(dots(build_signal_plan("한글")), symbols);
     }
 
     #[test]
