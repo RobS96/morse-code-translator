@@ -7,8 +7,8 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use morse_core::{
-    MAX_UNIT_MS, MIN_UNIT_MS, Signal, Timing, UNIT_MS, build_signal_plan, decode, encode,
-    wpm_to_unit_ms,
+    Alphabet, MAX_UNIT_MS, MIN_UNIT_MS, Signal, Timing, UNIT_MS, build_signal_plan_in, decode_in,
+    encode_in, wpm_to_unit_ms,
 };
 
 fn usage(prog: &str) -> String {
@@ -17,7 +17,13 @@ fn usage(prog: &str) -> String {
          Usage:\n  \
          {prog} encode <text>            Text -> Morse (supports <SK>, <AR>, ... prosigns)\n  \
          {prog} decode <morse>           Morse -> text (use / between words)\n  \
-         {prog} transmit <text> [opts]   Flash + beep the Morse in your terminal\n\n\
+         {prog} transmit <text> [opts]   Flash + beep the Morse in your terminal\n  \
+         {prog} alphabets                List the supported Morse alphabets\n\n\
+         Options (encode/decode/transmit):\n  \
+         -a, --alphabet <NAME>       latin, cyrillic, greek, hebrew, arabic, persian,\n  \
+                                     japanese (Wabun) or korean. Encode/transmit\n  \
+                                     detect it from the text when omitted; decode\n  \
+                                     defaults to latin (Morse can't be detected).\n\n\
          Transmit options:\n  \
          -u, --unit-ms <MS>          Character unit length in ms (default {UNIT_MS})\n  \
          -g, --gap-unit-ms <MS>      Letter/word gap unit length in ms (default: same as -u)\n  \
@@ -27,6 +33,8 @@ fn usage(prog: &str) -> String {
          {prog} encode \"SOS\"\n  \
          {prog} encode \"CQ CQ <AR>\"\n  \
          {prog} decode \"... --- ...\"\n  \
+         {prog} encode \"привет\"\n  \
+         {prog} decode \".--. .-. .. .-- . -\" --alphabet cyrillic\n  \
          {prog} transmit \"HELLO WORLD\" --wpm 20\n  \
          {prog} transmit \"HELLO WORLD\" --wpm 20 --farnsworth-wpm 5\n"
     )
@@ -95,27 +103,59 @@ fn resolve_timing(args: &[String]) -> Result<Timing, String> {
     })
 }
 
+/// Resolve `-a`/`--alphabet`: `Ok(None)` when absent (caller picks the
+/// default), a usage error for an unknown name.
+fn resolve_alphabet(args: &[String]) -> Result<Option<Alphabet>, String> {
+    match flag_value(args, &["-a", "--alphabet"]) {
+        None => Ok(None),
+        Some(name) => Alphabet::from_name(name).map(Some).ok_or_else(|| {
+            let ids: Vec<&str> = Alphabet::ALL.iter().map(|a| a.id()).collect();
+            format!(
+                "unknown alphabet {name:?}; expected one of: {}",
+                ids.join(", ")
+            )
+        }),
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
     let prog = args.first().map(String::as_str).unwrap_or("morse");
+
+    if args.get(1).map(String::as_str) == Some("alphabets") {
+        for a in Alphabet::ALL {
+            println!("{:<10} {}", a.id(), a.native_name());
+        }
+        return ExitCode::SUCCESS;
+    }
 
     let (Some(cmd), Some(arg)) = (args.get(1), args.get(2)) else {
         eprint!("{}", usage(prog));
         return ExitCode::FAILURE;
     };
 
+    let alphabet = match resolve_alphabet(&args) {
+        Ok(a) => a,
+        Err(err) => {
+            eprintln!("morse: {err}\n");
+            eprint!("{}", usage(prog));
+            return ExitCode::FAILURE;
+        }
+    };
+    let text_alphabet = || alphabet.unwrap_or_else(|| Alphabet::detect(arg));
+
     match cmd.as_str() {
         "encode" => {
-            println!("{}", encode(arg));
+            println!("{}", encode_in(arg, text_alphabet()));
             ExitCode::SUCCESS
         }
         "decode" => {
-            println!("{}", decode(arg));
+            println!("{}", decode_in(arg, alphabet.unwrap_or(Alphabet::Latin)));
             ExitCode::SUCCESS
         }
         "transmit" => match resolve_timing(&args) {
             Ok(timing) => {
-                transmit(arg, timing);
+                transmit(arg, timing, text_alphabet());
                 ExitCode::SUCCESS
             }
             Err(err) => {
@@ -135,7 +175,7 @@ fn main() -> ExitCode {
 /// according to standard Morse ratios (dot=1u, dash=3u, gaps 1u/3u/7u for
 /// symbol/letter/word) — or, under Farnsworth `timing`, with letter/word
 /// gaps stretched independently of character speed.
-fn transmit(text: &str, timing: Timing) {
+fn transmit(text: &str, timing: Timing, alphabet: Alphabet) {
     if timing.gap_unit_ms == timing.char_unit_ms {
         println!("Transmitting \"{text}\" @ {}ms/unit\n", timing.char_unit_ms);
     } else {
@@ -144,12 +184,12 @@ fn transmit(text: &str, timing: Timing) {
             timing.char_unit_ms, timing.gap_unit_ms
         );
     }
-    println!("{}", encode(text));
+    println!("{}", encode_in(text, alphabet));
 
     let stdout = io::stdout();
     let mut out = stdout.lock();
 
-    for signal in build_signal_plan(text) {
+    for signal in build_signal_plan_in(text, alphabet) {
         if signal.is_tone() {
             // \x07 = terminal bell (audible beep in most terminal apps).
             // \x1b[7m..\x1b[0m briefly inverts the colors for a visual flash.
@@ -225,6 +265,25 @@ mod tests {
     #[test]
     fn non_numeric_wpm_is_a_usage_error_not_a_silently_ignored_default() {
         assert!(resolve_timing(&args(&["transmit", "SOS", "--wpm", "fast"])).is_err());
+    }
+
+    #[test]
+    fn alphabet_flag_parses_names_and_aliases() {
+        assert_eq!(resolve_alphabet(&args(&["decode", ".-"])).unwrap(), None);
+        assert_eq!(
+            resolve_alphabet(&args(&["decode", ".-", "-a", "ru"])).unwrap(),
+            Some(Alphabet::Cyrillic)
+        );
+        assert_eq!(
+            resolve_alphabet(&args(&["decode", ".-", "--alphabet", "Wabun"])).unwrap(),
+            Some(Alphabet::Japanese)
+        );
+    }
+
+    #[test]
+    fn unknown_alphabet_is_a_usage_error_listing_the_choices() {
+        let err = resolve_alphabet(&args(&["decode", ".-", "-a", "klingon"])).unwrap_err();
+        assert!(err.contains("cyrillic") && err.contains("korean"), "{err}");
     }
 
     #[test]
