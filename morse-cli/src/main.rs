@@ -28,7 +28,7 @@ fn usage(prog: &str) -> String {
          -u, --unit-ms <MS>          Character unit length in ms (default {UNIT_MS})\n  \
          -g, --gap-unit-ms <MS>      Letter/word gap unit length in ms (default: same as -u)\n  \
          --wpm <N>                   Set character speed from words-per-minute\n  \
-         --farnsworth-wpm <N>        Set gap speed from words-per-minute (Farnsworth timing)\n\n\
+         --farnsworth-wpm <N>        Set effective overall speed (Farnsworth timing)\n\n\
          Examples:\n  \
          {prog} encode \"SOS\"\n  \
          {prog} encode \"CQ CQ <AR>\"\n  \
@@ -96,6 +96,19 @@ fn resolve_timing(args: &[String]) -> Result<Timing, String> {
         &["-g", "--gap-unit-ms"],
         char_unit_ms,
     )?;
+
+    // `--farnsworth-wpm` is an effective overall speed, not a unit length,
+    // so the spacing unit comes from the ARRL formula. The call above has
+    // already validated the value.
+    if let Some(effective_wpm) =
+        flag_value(args, &["--farnsworth-wpm"]).and_then(|v| v.parse::<f64>().ok())
+    {
+        let char_wpm = 1200.0 / char_unit_ms as f64;
+        return Ok(Timing {
+            char_unit_ms,
+            gap_unit_ms: Timing::farnsworth_wpm(char_wpm, effective_wpm).gap_unit_ms,
+        });
+    }
 
     Ok(Timing {
         char_unit_ms,
@@ -248,7 +261,8 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(timing.char_unit_ms, 60);
-        assert_eq!(timing.gap_unit_ms, 240);
+        // ARRL spacing unit for 20/5, not a bare 1200/5.
+        assert_eq!(timing.gap_unit_ms, 534);
     }
 
     #[test]

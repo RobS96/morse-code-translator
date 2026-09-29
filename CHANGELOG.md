@@ -18,6 +18,11 @@ versioning follows [Semantic Versioning](https://semver.org/).
   pt, ru, uk, el, ja, ko, zh-Hans) with a language picker, an alphabet
   picker, and system-font fallbacks for scripts egui doesn't bundle.
 - Prosigns are now recognised in any case (`<sk>` as well as `<SK>`).
+- Farnsworth timing now follows the ARRL formula, so `--wpm 20
+  --farnsworth-wpm 5` really sends at 5 WPM overall. The spacing unit was
+  `1200 / effective_wpm`, which gave about 10.9 WPM at 20/5. An effective
+  speed at or above the character speed now gives standard timing
+  instead of gaps shorter than standard.
 
 - Farnsworth timing: characters transmit at one WPM speed while
   letter/word gaps stretch to a slower "effective" WPM — the method

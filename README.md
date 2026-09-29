@@ -115,7 +115,7 @@ pauses between letters/words stretch out, giving you recognition time
 without encouraging you to count dits and dahs:
 
 ```bash
-morse transmit "PARIS" --wpm 20 --farnsworth-wpm 5   # 20 WPM characters, 5 WPM spacing
+morse transmit "PARIS" --wpm 20 --farnsworth-wpm 5   # 20 WPM characters, 5 WPM overall
 ```
 
 ## Alphabets

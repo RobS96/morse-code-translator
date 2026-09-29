@@ -83,12 +83,29 @@ impl Timing {
     }
 
     /// Farnsworth timing from WPM: characters sent at `char_wpm`, with
-    /// letter/word gaps stretched to match an effective `effective_wpm`
-    /// (which must be `<= char_wpm`, e.g. the ARRL's default 20/5 setting).
+    /// letter/word gaps stretched so the overall speed is `effective_wpm`
+    /// (e.g. the ARRL's default 20/5 setting).
+    ///
+    /// Uses the ARRL formula: the standard word PARIS is 31 units of
+    /// character time plus 19 units of spacing, so the spacing unit is
+    /// `(60000 / effective_wpm - 31 * char_unit) / 19` milliseconds. An
+    /// `effective_wpm` at or above `char_wpm` gives standard timing.
     pub fn farnsworth_wpm(char_wpm: f64, effective_wpm: f64) -> Self {
+        let char_unit_ms = wpm_to_unit_ms(char_wpm);
+        let stretched = effective_wpm.is_finite()
+            && effective_wpm > 0.0
+            && char_wpm.is_finite()
+            && effective_wpm < char_wpm;
+        let gap_unit_ms = if stretched {
+            ((60_000.0 / effective_wpm - 31.0 * char_unit_ms as f64) / 19.0)
+                .round()
+                .clamp(char_unit_ms as f64, MAX_UNIT_MS as f64) as u64
+        } else {
+            char_unit_ms
+        };
         Self {
-            char_unit_ms: wpm_to_unit_ms(char_wpm),
-            gap_unit_ms: wpm_to_unit_ms(effective_wpm),
+            char_unit_ms,
+            gap_unit_ms,
         }
     }
 }
@@ -110,7 +127,14 @@ impl Signal {
             // `wpm_to_unit_ms`'s clamp) with an arbitrary `u64`, and this
             // must never wrap into a tiny, wrong duration or panic.
             Signal::Dash => timing.char_unit_ms.saturating_mul(3),
-            Signal::LetterGap => timing.gap_unit_ms.saturating_mul(2),
+            // Every symbol is followed by one unit of silence at character
+            // speed, so a letter gap adds the rest of its 3 spacing units.
+            // Written as 2g + (g - c) so a saturated `3 * g` can't be
+            // dragged back down by the subtraction.
+            Signal::LetterGap => timing
+                .gap_unit_ms
+                .saturating_mul(2)
+                .saturating_add(timing.gap_unit_ms.saturating_sub(timing.char_unit_ms)),
             Signal::WordGap => timing.gap_unit_ms.saturating_mul(4),
         }
     }
@@ -499,9 +523,28 @@ mod tests {
         let timing = Timing::farnsworth_wpm(20.0, 5.0);
         assert_eq!(Signal::Dot.duration_ms_timed(timing), 60);
         assert_eq!(Signal::Dash.duration_ms_timed(timing), 180);
-        // Gaps use the much slower effective-speed unit (1200/5 = 240ms).
-        assert_eq!(Signal::LetterGap.duration_ms_timed(timing), 480);
-        assert_eq!(Signal::WordGap.duration_ms_timed(timing), 960);
+        // ARRL spacing unit: (60000/5 - 31*60) / 19 = 534ms (rounded).
+        assert_eq!(timing.gap_unit_ms, 534);
+        // A letter gap is 3 spacing units, 60ms of which the preceding
+        // symbol's own trailing silence already supplied.
+        assert_eq!(Signal::LetterGap.duration_ms_timed(timing), 3 * 534 - 60);
+        assert_eq!(Signal::WordGap.duration_ms_timed(timing), 4 * 534);
+    }
+
+    #[test]
+    fn farnsworth_paris_takes_one_effective_word_period() {
+        // PARIS plus its word gap is 31 character units and 19 spacing
+        // units; at 20/5 that must last 60s / 5 WPM = 12s.
+        let timing = Timing::farnsworth_wpm(20.0, 5.0);
+        let total = 31 * timing.char_unit_ms + 19 * timing.gap_unit_ms;
+        assert!(total.abs_diff(12_000) <= 19, "total was {total}ms");
+    }
+
+    #[test]
+    fn farnsworth_never_shortens_gaps_below_standard() {
+        assert_eq!(Timing::farnsworth_wpm(20.0, 20.0), Timing::uniform(60));
+        assert_eq!(Timing::farnsworth_wpm(20.0, 40.0), Timing::uniform(60));
+        assert_eq!(Timing::farnsworth_wpm(20.0, f64::NAN), Timing::uniform(60));
     }
 
     #[test]
