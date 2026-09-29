@@ -6,6 +6,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-29
+
 ### Added
 
 - Non-Latin Morse alphabets: Cyrillic, Greek, Hebrew, Arabic, Persian,
