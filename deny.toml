@@ -1,5 +1,5 @@
-# cargo-deny config — advisories, bans, licenses, sources; wired into
-# mac-nightly.sh alongside cargo audit (2026-09-03).
+# cargo-deny config: advisories, bans, licenses, sources. CI runs
+# `cargo deny check` on every push and pull request.
 
 [advisories]
 version = 2
@@ -13,8 +13,9 @@ allow = [
     "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib",
     "BSL-1.0", "OFL-1.1", "Ubuntu-font-1.0",  # pulled in by the eframe/egui GUI stack
 ]
-# Local workspace package is a private, unpublished tool — skip its own
-# license-field check (still checks every dependency's license normally).
+# A workspace crate marked `publish = false` would skip its own
+# license-field check. None is today: all three crates declare MIT, and
+# every dependency's license is checked normally.
 private = { ignore = true }
 
 [bans]
@@ -23,14 +24,10 @@ wildcards = "warn"
 skip = [
     # thiserror 1.0.69 (+ thiserror-impl 1.0.69): pulled in only by winit's
     # Linux/Wayland backend chain (calloop -> smithay-client-toolkit -> winit),
-    # inert on macOS — Cargo.lock resolves it because it covers all target
-    # platforms, not because it's compiled into this app's binary. The rest of
-    # the tree (and this backend chain's own newer deps) is on thiserror 2.x;
-    # upstream (eframe/winit's own tree) hasn't converged versions yet. Flagged
-    # as recurring/undocumented by nightly-error-audit 2026-09-05 — documenting
-    # here rather than re-investigating it each time it shows up in cargo-deny
-    # output. Re-evaluate if winit's Linux backend ever actually gets exercised
-    # on this estate (it isn't — macOS only).
+    # so it is compiled into the Linux build only. The rest of the tree (and
+    # this backend chain's own newer deps) is on thiserror 2.x; upstream
+    # (eframe/winit's own tree) hasn't converged versions yet. Remove these
+    # entries once it has.
     { name = "thiserror", version = "1.0.69" },
     { name = "thiserror-impl", version = "1.0.69" },
 ]

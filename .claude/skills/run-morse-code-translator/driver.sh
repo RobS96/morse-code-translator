@@ -1,19 +1,17 @@
 #!/bin/zsh
-# Driver for run-morse-code-translator. Every subcommand here was actually
-# run and verified against a live build during skill authoring.
+# Driver for run-morse-code-translator.
 #
-# Usage: driver.sh <build|smoke-core|smoke-cli|smoke-gui|gui-shot|test|all>
+# Usage: driver.sh <build|smoke-core|smoke-cli|smoke-gui|gui-interact|test|all>
 #
-# NOTE: this workspace's target-dir is redirected globally to
-# /private/tmp/cargo-target (see ~/.cargo/config.toml) -- Claude Code's
-# sandbox blocks writes there, so every cargo/rustc command below must run
-# with the sandbox override (dangerouslyDisableSandbox / run outside the
-# sandboxed shell).
+# Environment:
+#   REPO              repo root (default: found from this script's location)
+#   CARGO_TARGET_DIR  where cargo builds (default: $REPO/target)
+#   SHOT_DIR          screenshots and scratch files (default: $TMPDIR/morse-shots)
 set -uo pipefail
 
-REPO="${REPO:-$HOME/dev/morse-code-translator}"
-TARGET_DIR="${TARGET_DIR:-/private/tmp/cargo-target}"
-SHOT_DIR="${SHOT_DIR:-/tmp/morse-shots}"
+REPO="${REPO:-${0:A:h:h:h:h}}"
+TARGET_DIR="${TARGET_DIR:-${CARGO_TARGET_DIR:-$REPO/target}}"
+SHOT_DIR="${SHOT_DIR:-${TMPDIR:-/tmp}/morse-shots}"
 mkdir -p "$SHOT_DIR"
 
 cmd_build() {
@@ -80,12 +78,9 @@ cmd_smoke_gui() {
 
 # Optional interactive pass -- requires cliclick (brew install cliclick)
 # and the window already positioned at logical (60,60) by smoke-gui.
-# Offsets below are relative to the window's top-left (60,60) and were
-# cross-validated from two independent runs this session (matched within
-# ~2pt). The Transmit button offset is approximate / NOT verified this
-# session -- a concurrent process stole window focus before a clean
-# lit-lamp screenshot could be taken. Confirm it visually before relying
-# on it.
+# Offsets below are relative to the window's top-left (60,60). They were
+# measured against an earlier window layout; check the screenshots and
+# re-measure if a click misses.
 cmd_gui_interact() {
     command -v cliclick >/dev/null || { echo "cliclick not found -- brew install cliclick" >&2; return 1; }
     osascript -e 'tell application "System Events" to set frontmost of process "morse-gui" to true'

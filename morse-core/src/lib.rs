@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 mod alphabets;
-pub use alphabets::Alphabet;
+pub use alphabets::{Alphabet, normalize_input};
 
 /// One Morse "unit" in milliseconds. A dot is 1 unit, a dash is 3 units.
 pub const UNIT_MS: u64 = 100;
@@ -83,12 +83,29 @@ impl Timing {
     }
 
     /// Farnsworth timing from WPM: characters sent at `char_wpm`, with
-    /// letter/word gaps stretched to match an effective `effective_wpm`
-    /// (which must be `<= char_wpm`, e.g. the ARRL's default 20/5 setting).
+    /// letter/word gaps stretched so the overall speed is `effective_wpm`
+    /// (e.g. the ARRL's default 20/5 setting).
+    ///
+    /// Uses the ARRL formula: the standard word PARIS is 31 units of
+    /// character time plus 19 units of spacing, so the spacing unit is
+    /// `(60000 / effective_wpm - 31 * char_unit) / 19` milliseconds. An
+    /// `effective_wpm` at or above `char_wpm` gives standard timing.
     pub fn farnsworth_wpm(char_wpm: f64, effective_wpm: f64) -> Self {
+        let char_unit_ms = wpm_to_unit_ms(char_wpm);
+        let stretched = effective_wpm.is_finite()
+            && effective_wpm > 0.0
+            && char_wpm.is_finite()
+            && effective_wpm < char_wpm;
+        let gap_unit_ms = if stretched {
+            ((60_000.0 / effective_wpm - 31.0 * char_unit_ms as f64) / 19.0)
+                .round()
+                .clamp(char_unit_ms as f64, MAX_UNIT_MS as f64) as u64
+        } else {
+            char_unit_ms
+        };
         Self {
-            char_unit_ms: wpm_to_unit_ms(char_wpm),
-            gap_unit_ms: wpm_to_unit_ms(effective_wpm),
+            char_unit_ms,
+            gap_unit_ms,
         }
     }
 }
@@ -110,7 +127,14 @@ impl Signal {
             // `wpm_to_unit_ms`'s clamp) with an arbitrary `u64`, and this
             // must never wrap into a tiny, wrong duration or panic.
             Signal::Dash => timing.char_unit_ms.saturating_mul(3),
-            Signal::LetterGap => timing.gap_unit_ms.saturating_mul(2),
+            // Every symbol is followed by one unit of silence at character
+            // speed, so a letter gap adds the rest of its 3 spacing units.
+            // Written as 2g + (g - c) so a saturated `3 * g` can't be
+            // dragged back down by the subtraction.
+            Signal::LetterGap => timing
+                .gap_unit_ms
+                .saturating_mul(2)
+                .saturating_add(timing.gap_unit_ms.saturating_sub(timing.char_unit_ms)),
             Signal::WordGap => timing.gap_unit_ms.saturating_mul(4),
         }
     }
@@ -228,12 +252,20 @@ fn table_chars(c: char, alphabet: Alphabet) -> Vec<char> {
         .collect()
 }
 
-fn codes_for_word(word: &str, alphabet: Alphabet) -> Vec<&'static str> {
+/// The codes `word` is sent as. Every input character that has no code,
+/// or only part of whose expansion has one, is appended to `skipped`.
+fn codes_for_word(word: &str, alphabet: Alphabet, skipped: &mut Vec<char>) -> Vec<&'static str> {
     let encode = &TABLES[&alphabet].encode;
-    word.chars()
-        .flat_map(|c| table_chars(c, alphabet))
-        .filter_map(|c| encode.get(&c).copied())
-        .collect()
+    let mut codes = Vec::new();
+    for c in word.chars() {
+        let table_chars = table_chars(c, alphabet);
+        let before = codes.len();
+        codes.extend(table_chars.iter().filter_map(|t| encode.get(t).copied()));
+        if codes.len() - before != table_chars.len() || table_chars.is_empty() {
+            skipped.push(c);
+        }
+    }
+    codes
 }
 
 /// Procedural signs ("prosigns"): pairs of letters conventionally sent
@@ -288,12 +320,41 @@ fn tokenize(text: &str) -> Vec<Token<'_>> {
     tokens
 }
 
+/// The Morse words `text` is sent as, each a list of letter codes. A
+/// prosign is a word of one fused code. Input is normalised first
+/// ([`normalize_input`]); a word none of whose characters has a code is
+/// left out entirely rather than sent as an empty word.
+fn encode_words(text: &str, alphabet: Alphabet, skipped: &mut Vec<char>) -> Vec<Vec<&'static str>> {
+    tokenize(&normalize_input(text))
+        .into_iter()
+        .map(|token| match token {
+            Token::Prosign(name) => vec![PROSIGNS[name]],
+            Token::Word(word) => codes_for_word(word, alphabet, skipped),
+        })
+        .filter(|codes| !codes.is_empty())
+        .collect()
+}
+
+/// The result of a lossy encode: the Morse, plus what was left out of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncodeReport {
+    /// The Morse output, exactly as [`encode_in`] returns it.
+    pub morse: String,
+    /// Every input character that has no code in the alphabet and was
+    /// dropped, in input order, repeats included. Characters are reported
+    /// as they stand after [`normalize_input`]. Whitespace is a separator,
+    /// not a dropped character.
+    pub skipped: Vec<char>,
+}
+
 /// Encode plain text into Morse, e.g. "SOS" -> "... --- ...".
 /// The alphabet is detected from the text ([`Alphabet::detect`]); use
-/// [`encode_in`] to choose it. Unknown characters are dropped. Words stay
-/// separated by " / ". A `<NAME>` token (e.g. `<SK>`, `<AR>`) matching a
-/// known prosign is sent as a single fused character instead of being
-/// letter-decomposed.
+/// [`encode_in`] to choose it. Input is normalised with
+/// [`normalize_input`]. Unknown characters are dropped, and a word left
+/// with no characters is dropped with them; use [`encode_lossy_report`] to
+/// learn which. Words stay separated by " / ". A `<NAME>` token (e.g.
+/// `<SK>`, `<AR>`) matching a known prosign is sent as a single fused
+/// character instead of being letter-decomposed.
 pub fn encode(text: &str) -> String {
     encode_in(text, Alphabet::detect(text))
 }
@@ -301,14 +362,24 @@ pub fn encode(text: &str) -> String {
 /// [`encode`] with an explicit alphabet. Matters for Arabic vs Persian,
 /// which share letters but not codes.
 pub fn encode_in(text: &str, alphabet: Alphabet) -> String {
-    tokenize(text)
-        .into_iter()
-        .map(|token| match token {
-            Token::Prosign(name) => PROSIGNS[name].to_string(),
-            Token::Word(word) => codes_for_word(word, alphabet).join(" "),
-        })
+    encode_lossy_report_in(text, alphabet).morse
+}
+
+/// [`encode`], also reporting the characters that were dropped because
+/// they have no Morse code.
+pub fn encode_lossy_report(text: &str) -> EncodeReport {
+    encode_lossy_report_in(text, Alphabet::detect(text))
+}
+
+/// [`encode_lossy_report`] with an explicit alphabet (see [`encode_in`]).
+pub fn encode_lossy_report_in(text: &str, alphabet: Alphabet) -> EncodeReport {
+    let mut skipped = Vec::new();
+    let morse = encode_words(text, alphabet, &mut skipped)
+        .iter()
+        .map(|codes| codes.join(" "))
         .collect::<Vec<_>>()
-        .join(" / ")
+        .join(" / ");
+    EncodeReport { morse, skipped }
 }
 
 /// Decode Morse back into Latin text. Letters are space-separated, words
@@ -360,30 +431,22 @@ pub fn build_signal_plan(text: &str) -> Vec<Signal> {
 }
 
 /// [`build_signal_plan`] with an explicit alphabet (see [`encode_in`]).
+/// Words with nothing to send are skipped, so the plan never holds two
+/// word gaps in a row or a leading or trailing one.
 pub fn build_signal_plan_in(text: &str, alphabet: Alphabet) -> Vec<Signal> {
-    let tokens = tokenize(text);
     let mut plan = Vec::new();
-    let n = tokens.len();
-
-    for (i, token) in tokens.into_iter().enumerate() {
-        match token {
-            Token::Prosign(name) => {
-                for symbol in PROSIGNS[name].chars() {
-                    push_symbol(&mut plan, symbol);
-                }
-                plan.push(Signal::LetterGap);
-            }
-            Token::Word(word) => {
-                for code in codes_for_word(word, alphabet) {
-                    for symbol in code.chars() {
-                        push_symbol(&mut plan, symbol);
-                    }
-                    plan.push(Signal::LetterGap);
-                }
-            }
-        }
-        if i != n - 1 {
+    for (i, codes) in encode_words(text, alphabet, &mut Vec::new())
+        .into_iter()
+        .enumerate()
+    {
+        if i != 0 {
             plan.push(Signal::WordGap);
+        }
+        for code in codes {
+            for symbol in code.chars() {
+                push_symbol(&mut plan, symbol);
+            }
+            plan.push(Signal::LetterGap);
         }
     }
     plan
@@ -431,6 +494,108 @@ mod tests {
     #[test]
     fn unknown_characters_are_dropped() {
         assert_eq!(encode("A~B"), ".- -...");
+    }
+
+    #[test]
+    fn unencodable_words_leave_no_empty_word() {
+        assert_eq!(encode("A ~ B"), ".- / -...");
+        assert_eq!(encode("~ A"), ".-");
+        assert_eq!(encode("A ~"), ".-");
+        assert_eq!(encode("A ~ ~ B"), ".- / -...");
+        assert_eq!(encode("~ ~"), "");
+        assert_eq!(decode(&encode("A ~ B")), "A B");
+    }
+
+    #[test]
+    fn unencodable_words_leave_no_doubled_word_gap() {
+        assert_eq!(build_signal_plan("E ~ E"), build_signal_plan("E E"));
+        assert_eq!(build_signal_plan("~ E ~"), build_signal_plan("E"));
+        assert_eq!(build_signal_plan("~ ~"), vec![]);
+        // A prosign next to an unencodable word keeps a single word gap.
+        assert_eq!(build_signal_plan("<AR> ~ E"), build_signal_plan("<AR> E"));
+    }
+
+    #[test]
+    fn lossy_report_lists_dropped_characters_in_order() {
+        let report = encode_lossy_report("A~B ~ C#");
+        assert_eq!(report.morse, ".- -... / -.-.");
+        assert_eq!(report.skipped, vec!['~', '~', '#']);
+    }
+
+    #[test]
+    fn lossy_report_is_empty_when_nothing_is_dropped() {
+        for text in [
+            "SOS",
+            "CQ CQ <AR>",
+            "hello, world!",
+            "한글",
+            "が",
+            "  A  B  ",
+        ] {
+            let report = encode_lossy_report(text);
+            assert_eq!(report.skipped, vec![], "{text:?}");
+            assert_eq!(report.morse, encode(text));
+        }
+    }
+
+    #[test]
+    fn lossy_report_covers_brackets_and_foreign_letters() {
+        // An unknown <NAME> is an ordinary word whose brackets have no code.
+        assert_eq!(encode_lossy_report("<ZZ>").skipped, vec!['<', '>']);
+        // Cyrillic has no code in the Latin alphabet, and vice versa Latin
+        // letters are accepted everywhere.
+        let report = encode_lossy_report_in("Я A", Alphabet::Latin);
+        assert_eq!(report.morse, ".-");
+        assert_eq!(report.skipped, vec!['Я']);
+        assert_eq!(
+            encode_lossy_report_in("Я A", Alphabet::Cyrillic).skipped,
+            vec![]
+        );
+    }
+
+    #[test]
+    fn lossy_report_names_uncovered_combining_marks() {
+        // Decomposed accented Latin is not normalised: the base letter is
+        // sent and the mark is reported.
+        let report = encode_lossy_report("N\u{0303}");
+        assert_eq!(report.morse, "-.");
+        assert_eq!(report.skipped, vec!['\u{0303}']);
+    }
+
+    #[test]
+    fn decomposed_input_encodes_like_precomposed() {
+        for (decomposed, precomposed) in [
+            ("и\u{0306}", "й"),
+            ("Е\u{0308}Ж", "ЁЖ"),
+            ("і\u{0308}", "ї"),
+            ("か\u{3099}", "が"),
+            ("ハ\u{309A}", "パ"),
+            ("ｶﾞｲｼﾞﾝ", "ガイジン"),
+            ("\u{1112}\u{1161}\u{11AB}\u{1100}\u{1173}\u{11AF}", "한글"),
+        ] {
+            assert_eq!(
+                encode(decomposed),
+                encode(precomposed),
+                "{decomposed:?} vs {precomposed:?}"
+            );
+            assert_eq!(encode_lossy_report(decomposed).skipped, vec![]);
+            assert_eq!(
+                build_signal_plan(decomposed),
+                build_signal_plan(precomposed)
+            );
+        }
+        // Й has its own code; without normalisation this was И + a drop.
+        assert_eq!(encode("и\u{0306}"), ".---");
+    }
+
+    #[test]
+    fn hebrew_final_form_round_trips_before_punctuation() {
+        for text in ["שלום.", "שלום, עולם!", "(שלום)", "מלך?"] {
+            assert_eq!(
+                decode_in(&encode_in(text, Alphabet::Hebrew), Alphabet::Hebrew),
+                text
+            );
+        }
     }
 
     #[test]
@@ -499,9 +664,28 @@ mod tests {
         let timing = Timing::farnsworth_wpm(20.0, 5.0);
         assert_eq!(Signal::Dot.duration_ms_timed(timing), 60);
         assert_eq!(Signal::Dash.duration_ms_timed(timing), 180);
-        // Gaps use the much slower effective-speed unit (1200/5 = 240ms).
-        assert_eq!(Signal::LetterGap.duration_ms_timed(timing), 480);
-        assert_eq!(Signal::WordGap.duration_ms_timed(timing), 960);
+        // ARRL spacing unit: (60000/5 - 31*60) / 19 = 534ms (rounded).
+        assert_eq!(timing.gap_unit_ms, 534);
+        // A letter gap is 3 spacing units, 60ms of which the preceding
+        // symbol's own trailing silence already supplied.
+        assert_eq!(Signal::LetterGap.duration_ms_timed(timing), 3 * 534 - 60);
+        assert_eq!(Signal::WordGap.duration_ms_timed(timing), 4 * 534);
+    }
+
+    #[test]
+    fn farnsworth_paris_takes_one_effective_word_period() {
+        // PARIS plus its word gap is 31 character units and 19 spacing
+        // units; at 20/5 that must last 60s / 5 WPM = 12s.
+        let timing = Timing::farnsworth_wpm(20.0, 5.0);
+        let total = 31 * timing.char_unit_ms + 19 * timing.gap_unit_ms;
+        assert!(total.abs_diff(12_000) <= 19, "total was {total}ms");
+    }
+
+    #[test]
+    fn farnsworth_never_shortens_gaps_below_standard() {
+        assert_eq!(Timing::farnsworth_wpm(20.0, 20.0), Timing::uniform(60));
+        assert_eq!(Timing::farnsworth_wpm(20.0, 40.0), Timing::uniform(60));
+        assert_eq!(Timing::farnsworth_wpm(20.0, f64::NAN), Timing::uniform(60));
     }
 
     #[test]
