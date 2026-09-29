@@ -3,6 +3,8 @@ name = "morse-gui"
 description = "Cross-platform desktop GUI (Windows/macOS/Linux) for the Morse code translator, with live visual flash + audible tone transmission."
 version.workspace = true
 edition.workspace = true
+# eframe/egui 0.36 declare rust-version 1.95.
+rust-version = "1.95"
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

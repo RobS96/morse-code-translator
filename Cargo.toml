@@ -5,6 +5,9 @@ members = ["morse-core", "morse-cli", "morse-gui"]
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
+# let-chains (`if let ... && let ...`) in morse-core and morse-cli need 1.88.
+# morse-gui sets a higher floor of its own because eframe/egui require it.
+rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/RobS96/morse-code-translator"
 authors = ["RobS96"]
@@ -12,3 +15,6 @@ authors = ["RobS96"]
 [profile.release]
 opt-level = 3
 lto = true
+codegen-units = 1
+strip = true
+overflow-checks = true

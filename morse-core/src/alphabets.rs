@@ -105,7 +105,9 @@ impl Alphabet {
                         Alphabet::Arabic
                     }
                 }
-                0x3040..=0x30FF | 0x3000..=0x303F | 0xFF08 | 0xFF09 => Alphabet::Japanese,
+                0x3040..=0x30FF | 0x3000..=0x303F | 0xFF08 | 0xFF09 | 0xFF61..=0xFF9F => {
+                    Alphabet::Japanese
+                }
                 0x1100..=0x11FF | 0x3130..=0x318F | 0xAC00..=0xD7A3 => Alphabet::Korean,
                 _ => continue,
             };
@@ -299,12 +301,14 @@ pub(crate) fn compose_kana(text: &str) -> String {
 }
 
 /// Hebrew writes כ מ נ פ צ in a distinct final form at the end of a word.
-/// Morse sends both forms with one code, so restore them on decode.
+/// Morse sends both forms with one code, so restore them on decode. The
+/// word's last letter counts even when punctuation follows it ("שלום."),
+/// but not when a digit or another letter does.
 pub(crate) fn hebrew_final_forms(text: &str) -> String {
     text.split(' ')
         .map(|word| {
             let mut chars: Vec<char> = word.chars().collect();
-            if let Some(last) = chars.last_mut()
+            if let Some(last) = chars.iter_mut().rev().find(|c| c.is_alphanumeric())
                 && let Some(&(final_form, _)) = Alphabet::Hebrew
                     .encode_aliases()
                     .iter()
@@ -316,6 +320,107 @@ pub(crate) fn hebrew_final_forms(text: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Full-width forms of the half-width block U+FF61..=U+FF9F, in order.
+const HALFWIDTH_KANA: &str = "。「」、・ヲァィゥェォャュョッーアイウエオカキクケコサシスセソタチツテト\
+                              ナニヌネノハヒフヘホマミムメモヤユヨラリルレロワン゛゜";
+
+/// Decomposed Cyrillic letters: (base, combining mark, precomposed).
+#[rustfmt::skip]
+const CYRILLIC_COMPOSED: &[(char, char, char)] = &[
+    ('И', '\u{0306}', 'Й'), ('и', '\u{0306}', 'й'),
+    ('Е', '\u{0308}', 'Ё'), ('е', '\u{0308}', 'ё'),
+    ('І', '\u{0308}', 'Ї'), ('і', '\u{0308}', 'ї'),
+];
+
+/// The voiced form of kana `base` (hiragana or katakana) under `mark`
+/// (゛ or ゜), in the same syllabary as `base`.
+fn voiced_kana(base: char, mark: char) -> Option<char> {
+    let hiragana = to_hiragana(base);
+    let &(voiced, _, _) = KANA_VOICED
+        .iter()
+        .find(|(_, b, m)| *b == hiragana && *m == mark)?;
+    if hiragana == base {
+        Some(voiced)
+    } else {
+        char::from_u32(voiced as u32 + 0x60)
+    }
+}
+
+/// Rewrite the decomposed and compatibility forms that keyboards, file
+/// names and copy-paste commonly produce into the characters the Morse
+/// tables are keyed on. The encoder applies this to all input; it is a
+/// hand-written subset of Unicode normalisation, not NFC/NFKC.
+///
+/// Covered:
+/// - Cyrillic И/и + U+0306 -> Й/й, Е/е + U+0308 -> Ё/ё and
+///   І/і + U+0308 -> Ї/ї.
+/// - Kana followed by a combining (semi-)voiced mark (U+3099, U+309A) ->
+///   the precomposed kana (か + U+3099 -> が). Where no precomposed kana
+///   exists the mark becomes the spacing mark (゛ or ゜), which Wabun sends
+///   as a character of its own.
+/// - Half-width katakana and punctuation (U+FF61..=U+FF9F) -> full-width,
+///   with half-width voiced marks combined the same way (ｶﾞ -> ガ).
+/// - Modern Hangul conjoining jamo (initials U+1100..=U+1112, medials
+///   U+1161..=U+1175, finals U+11A8..=U+11C2) -> compatibility jamo, with
+///   double and compound jamo written as their component letters, exactly
+///   as precomposed syllables are sent.
+///
+/// Not covered (such characters pass through unchanged, and the encoder
+/// drops and reports whatever has no code):
+/// - Any other combining mark: decomposed accented Latin (N + U+0303),
+///   Greek tonos, Hebrew points, Arabic vowel marks.
+/// - Archaic conjoining jamo and the fillers U+115F/U+1160.
+/// - Ligatures, presentation forms and full-width Latin letters.
+pub fn normalize_input(text: &str) -> String {
+    let mut out: Vec<char> = Vec::with_capacity(text.len());
+    for c in text.chars() {
+        let cp = c as u32;
+        // A (semi-)voiced mark that follows its kana: the combining marks,
+        // and the half-width spacing marks (ﾞ ﾟ). Full-width spacing marks
+        // are already what the table holds.
+        let mark = match cp {
+            0x3099 | 0xFF9E => Some(DAKUTEN),
+            0x309A | 0xFF9F => Some(HANDAKUTEN),
+            _ => None,
+        };
+        if let Some(mark) = mark {
+            if let Some(last) = out.last_mut()
+                && let Some(voiced) = voiced_kana(*last, mark)
+            {
+                *last = voiced;
+            } else {
+                out.push(mark);
+            }
+            continue;
+        }
+        match cp {
+            0x0306 | 0x0308 => {
+                if let Some(last) = out.last_mut()
+                    && let Some(&(_, _, composed)) = CYRILLIC_COMPOSED
+                        .iter()
+                        .find(|(base, mark, _)| base == last && *mark == c)
+                {
+                    *last = composed;
+                } else {
+                    out.push(c);
+                }
+            }
+            0xFF61..=0xFF9D => out.push(
+                HALFWIDTH_KANA
+                    .chars()
+                    .nth((cp - 0xFF61) as usize)
+                    .unwrap_or(c),
+            ),
+            0x1100..=0x1112 => out.extend(INITIALS[(cp - 0x1100) as usize].chars()),
+            0x1161..=0x1175 => out.extend(MEDIALS[(cp - 0x1161) as usize].chars()),
+            // FINALS[0] is "no final consonant", so U+11A8 is index 1.
+            0x11A8..=0x11C2 => out.extend(FINALS[(cp - 0x11A8 + 1) as usize].chars()),
+            _ => out.push(c),
+        }
+    }
+    out.into_iter().collect()
 }
 
 // Hangul syllable decomposition (Unicode §3.12), mapping each conjoining
@@ -447,6 +552,178 @@ mod tests {
         assert_eq!(compose_kana("か゛は゜"), "がぱ");
         // A stray mark after a kana with no voiced form stays as-is.
         assert_eq!(compose_kana("な゛"), "な゛");
+    }
+
+    #[test]
+    fn hebrew_final_form_applies_to_the_last_letter_of_a_word() {
+        assert_eq!(hebrew_final_forms("שלומ"), "שלום");
+        assert_eq!(hebrew_final_forms("שלומ."), "שלום.");
+        assert_eq!(hebrew_final_forms("שלומ?!"), "שלום?!");
+        assert_eq!(hebrew_final_forms("(מלכ) שלומ, עולמ"), "(מלך) שלום, עולם");
+        // Only the last letter changes, and only if it has a final form.
+        assert_eq!(hebrew_final_forms("ממ."), "מם.");
+        assert_eq!(hebrew_final_forms("מה."), "מה.");
+        // A letter followed by a digit is not word-final.
+        assert_eq!(hebrew_final_forms("מ3"), "מ3");
+        assert_eq!(hebrew_final_forms("..."), "...");
+        assert_eq!(hebrew_final_forms(""), "");
+    }
+
+    #[test]
+    fn normalize_composes_decomposed_cyrillic() {
+        assert_eq!(normalize_input("И\u{0306}и\u{0306}"), "Йй");
+        assert_eq!(normalize_input("Е\u{0308}е\u{0308}"), "Ёё");
+        assert_eq!(normalize_input("І\u{0308}і\u{0308}"), "Її");
+        // The marks only compose with those letters.
+        assert_eq!(normalize_input("А\u{0306}"), "А\u{0306}");
+        assert_eq!(normalize_input("И\u{0308}"), "И\u{0308}");
+        assert_eq!(normalize_input("\u{0306}"), "\u{0306}");
+    }
+
+    #[test]
+    fn normalize_composes_kana_with_combining_marks() {
+        assert_eq!(normalize_input("か\u{3099}"), "が");
+        assert_eq!(normalize_input("は\u{309A}"), "ぱ");
+        assert_eq!(normalize_input("カ\u{3099}ホ\u{309A}"), "ガポ");
+        assert_eq!(normalize_input("ウ\u{3099}"), "ヴ");
+        // No precomposed form: the mark becomes a spacing mark, which
+        // Wabun sends as its own character.
+        assert_eq!(normalize_input("な\u{3099}"), "な゛");
+        assert_eq!(normalize_input("か\u{309A}"), "か゜");
+        assert_eq!(normalize_input("\u{3099}"), "゛");
+        // Spacing marks typed as such are left alone.
+        assert_eq!(normalize_input("か゛"), "か゛");
+    }
+
+    #[test]
+    fn normalize_widens_half_width_katakana() {
+        assert_eq!(HALFWIDTH_KANA.chars().count(), 0xFF9F - 0xFF61 + 1);
+        assert_eq!(normalize_input("ｱｲｳｴｵ"), "アイウエオ");
+        assert_eq!(normalize_input("ｦﾝｯｰ"), "ヲンッー");
+        assert_eq!(normalize_input("ｶﾞｷﾞﾊﾟ"), "ガギパ");
+        assert_eq!(normalize_input("ﾅﾞ"), "ナ゛");
+        assert_eq!(normalize_input("｡､"), "。、");
+        assert_eq!(normalize_input("\u{FF61}"), "\u{3002}");
+        assert_eq!(normalize_input("\u{FF9D}"), "\u{30F3}");
+        assert_eq!(Alphabet::detect("ｶﾀｶﾅ"), Alphabet::Japanese);
+    }
+
+    #[test]
+    fn normalize_maps_conjoining_jamo_to_compatibility_jamo() {
+        // 한글 in conjoining jamo (what NFD produces).
+        assert_eq!(
+            normalize_input("\u{1112}\u{1161}\u{11AB}\u{1100}\u{1173}\u{11AF}"),
+            "ㅎㅏㄴㄱㅡㄹ"
+        );
+        // First and last of each modern range.
+        assert_eq!(normalize_input("\u{1100}\u{1112}"), "ㄱㅎ");
+        assert_eq!(normalize_input("\u{1161}\u{1175}"), "ㅏㅣ");
+        assert_eq!(normalize_input("\u{11A8}\u{11C2}"), "ㄱㅎ");
+        // Double and compound jamo become their component letters.
+        assert_eq!(normalize_input("\u{1101}\u{116A}\u{11B9}"), "ㄱㄱㅗㅏㅂㅅ");
+        // Archaic jamo and fillers are not covered.
+        assert_eq!(normalize_input("\u{1113}\u{1160}"), "\u{1113}\u{1160}");
+        assert_eq!(normalize_input("\u{11A7}\u{11C3}"), "\u{11A7}\u{11C3}");
+    }
+
+    #[test]
+    fn every_conjoining_jamo_matches_its_precomposed_syllable() {
+        // Composing L+V(+T) arithmetically must give the same letters as
+        // mapping the conjoining jamo one by one.
+        for l in 0..19u32 {
+            for v in 0..21u32 {
+                for t in 0..28u32 {
+                    let syllable = char::from_u32(0xAC00 + (l * 21 + v) * 28 + t).unwrap();
+                    let mut jamo = String::new();
+                    jamo.push(char::from_u32(0x1100 + l).unwrap());
+                    jamo.push(char::from_u32(0x1161 + v).unwrap());
+                    if t != 0 {
+                        jamo.push(char::from_u32(0x11A7 + t).unwrap());
+                    }
+                    let expected: String =
+                        decompose_hangul(syllable).unwrap().into_iter().collect();
+                    assert_eq!(normalize_input(&jamo), expected, "{syllable}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn normalize_leaves_other_text_alone() {
+        for text in [
+            "",
+            "SOS",
+            "привет мир",
+            "שלום",
+            "こんにちは",
+            "한글",
+            "N\u{0303}",
+        ] {
+            assert_eq!(normalize_input(text), text);
+        }
+    }
+
+    #[test]
+    fn letter_codes_shared_with_punctuation_are_the_documented_ones() {
+        // decode_in prefers the alphabet's own letter when its code is also
+        // a shared punctuation mark's or a prosign's. Each such collision is
+        // accepted and listed in the README; a table change that adds or
+        // removes one must update both. No letter may share a digit's code.
+        #[rustfmt::skip]
+        let expected: &[(Alphabet, &[(char, &str)])] = &[(
+            Alphabet::Japanese,
+            &[
+                ('る', "("), ('る', "<KN>"), ('お', "&"), ('お', "<AS>"), ('さ', "<CT>"),
+                ('め', "="), ('め', "<BT>"), ('も', "/"), ('ん', "+"), ('ん', "<AR>"),
+                ('、', "."), ('（', ")"), ('）', "\""),
+            ],
+        )];
+        let mut shared: Vec<(char, &str)> =
+            crate::TABLE.iter().map(|(&c, &code)| (c, code)).collect();
+        shared.sort();
+        let mut prosigns: Vec<(&str, &str)> = crate::PROSIGNS
+            .iter()
+            .map(|(&name, &code)| (name, code))
+            .collect();
+        prosigns.sort();
+
+        for a in Alphabet::ALL {
+            let mut found: Vec<(char, String)> = Vec::new();
+            let mut seen = HashSet::new();
+            for (letter, code) in a.letters() {
+                if !seen.insert(*code) {
+                    continue; // encode-only variant; never decoded
+                }
+                for (c, _) in shared.iter().filter(|(_, shared_code)| shared_code == code) {
+                    assert!(
+                        !c.is_ascii_digit(),
+                        "{a:?}: {letter} shares {code} with digit {c}"
+                    );
+                    if !c.is_alphabetic() {
+                        found.push((*letter, c.to_string()));
+                    }
+                }
+                for (name, _) in prosigns.iter().filter(|(_, p)| p == code) {
+                    found.push((*letter, format!("<{name}>")));
+                }
+            }
+            let documented: Vec<(char, String)> = expected
+                .iter()
+                .filter(|(alphabet, _)| *alphabet == a)
+                .flat_map(|(_, pairs)| pairs.iter())
+                .map(|(letter, other)| (*letter, other.to_string()))
+                .collect();
+            assert_eq!(found, documented, "{a:?}");
+        }
+    }
+
+    #[test]
+    fn colliding_codes_decode_as_the_letter() {
+        assert_eq!(crate::decode_in(".-.-.", Alphabet::Japanese), "ん");
+        assert_eq!(crate::decode_in(".-.-.-", Alphabet::Japanese), "、");
+        assert_eq!(crate::decode_in("-.-.-", Alphabet::Japanese), "さ");
+        assert_eq!(crate::decode_in(".-.-.", Alphabet::Cyrillic), "+");
+        assert_eq!(crate::decode_in("-.-.-", Alphabet::Cyrillic), "<CT>");
     }
 
     #[test]

@@ -16,12 +16,15 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Install Linux build deps (GUI windowing/audio)
         if: runner.os == 'Linux'
@@ -39,13 +42,13 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
 
       - name: Build
-        run: cargo build --workspace --release
+        run: cargo build --locked --workspace --release
 
       # Once per matrix run is enough — the dependency graph doesn't vary
       # meaningfully across OS for this check (cargo-deny/cargo-vet resolve
@@ -54,10 +57,12 @@ jobs:
       # third-party Action — this repo's Actions policy only allows
       # GitHub-owned/verified actions plus an explicit pattern list, and
       # adding a new third-party action there would widen that trust
-      # boundary; a plain `run:` step doesn't need to.
+      # boundary; a plain `run:` step doesn't need to. Versions are pinned
+      # so a new release of either tool can't change what the gate checks
+      # without a reviewed change here.
       - name: Install cargo-deny + cargo-vet
         if: matrix.os == 'ubuntu-latest'
-        run: cargo install cargo-deny cargo-vet --locked
+        run: cargo install --locked cargo-deny@0.19.9 cargo-vet@0.10.2
 
       # Full `cargo deny check` (advisories/bans/licenses/sources), not just
       # advisories+bans -- deny.toml configures all four categories
@@ -80,8 +85,13 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: test
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    # Scoped to this job only: contents to publish the release, id-token
+    # and attestations to sign and store the build provenance.
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -94,6 +104,8 @@ jobs:
             label: windows-x86_64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Install Linux build deps (GUI windowing/audio)
         if: runner.os == 'Linux'
@@ -105,20 +117,34 @@ jobs:
 
       - name: Build
         if: runner.os != 'macOS'
-        run: cargo build --workspace --release
+        run: cargo build --locked --workspace --release
 
       - name: Build (universal binary)
         if: runner.os == 'macOS'
         run: |
           rustup target add x86_64-apple-darwin aarch64-apple-darwin
-          cargo build --workspace --release --target x86_64-apple-darwin
-          cargo build --workspace --release --target aarch64-apple-darwin
+          cargo build --locked --workspace --release --target x86_64-apple-darwin
+          cargo build --locked --workspace --release --target aarch64-apple-darwin
           mkdir -p target/release
           for bin in morse morse-gui; do
             lipo -create \
               target/x86_64-apple-darwin/release/$bin \
               target/aarch64-apple-darwin/release/$bin \
               -output target/release/$bin
+          done
+
+      # One CycloneDX SBOM per crate, for the runner's own target, shipped
+      # inside the archive. Generated here rather than committed, so it
+      # always describes the dependencies this release was built from.
+      - name: Generate SBOMs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install --locked cargo-cyclonedx@0.5.9
+          cargo cyclonedx --format json --override-filename sbom
+          mkdir -p stage/sbom
+          for crate in morse-core morse-cli morse-gui; do
+            cp "$crate/sbom.json" "stage/sbom/$crate.cdx.json"
           done
 
       - name: Package
@@ -134,6 +160,25 @@ jobs:
             cp target/release/morse target/release/morse-gui stage/
             tar -czf "dist/morse-${GITHUB_REF_NAME}-${{ matrix.label }}.tar.gz" -C stage .
           fi
+
+      # Named per platform: the three matrix jobs upload to one release,
+      # and a shared name would leave only the last job's checksums.
+      - name: Checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          if command -v sha256sum >/dev/null; then
+            sha256sum morse-* > "SHA256SUMS-${{ matrix.label }}.txt"
+          else
+            shasum -a 256 morse-* > "SHA256SUMS-${{ matrix.label }}.txt"
+          fi
+          cat "SHA256SUMS-${{ matrix.label }}.txt"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/morse-*
 
       - name: Upload to GitHub release
         shell: bash

@@ -38,7 +38,8 @@ Dash = long flash/beep   (3 units)
 
 ### Everyone (build from source)
 
-Requires the [Rust toolchain](https://rustup.rs) (stable).
+Requires the [Rust toolchain](https://rustup.rs) (stable): Rust 1.88 or
+newer for `morse-core` and `morse-cli`, 1.95 or newer for `morse-gui`.
 
 ```bash
 git clone https://github.com/RobS96/morse-code-translator.git && cd morse-code-translator
@@ -68,7 +69,14 @@ Binaries land in `target/release/`:
 Tagged releases publish binaries for Windows, macOS (universal), and
 Linux under
 [Releases](https://github.com/RobS96/morse-code-translator/releases) —
-no Rust toolchain needed.
+no Rust toolchain needed. Each archive carries a CycloneDX SBOM per crate
+under `sbom/`, and each platform has a `SHA256SUMS-<platform>.txt` beside
+it. To check a download:
+
+```bash
+sha256sum -c SHA256SUMS-linux-x86_64.txt      # shasum -a 256 -c on macOS
+gh attestation verify morse-*.tar.gz --repo RobS96/morse-code-translator
+```
 
 Alternatively, install just the CLI straight from a clone:
 
@@ -84,6 +92,24 @@ morse decode "... --- ..."         # -> SOS
 morse transmit "HELLO WORLD"       # flashes + beeps it live in your terminal
 morse transmit "SOS" --wpm 25      # faster: 25 words-per-minute
 morse transmit "SOS" -u 60         # or set the raw unit length directly (ms)
+morse --help                       # every option
+morse --version
+```
+
+Options may come before or after the text (`morse -a cyrillic decode ".-"`
+works too), and `--name=value` is accepted for the long ones. Quote the text
+so it arrives as one argument. Morse that starts with a dash (`morse decode
+"-... ---"`) is read as text, not as an option. A misspelt option, an option
+with its value missing, or a second piece of text is a usage error (exit
+code 1).
+
+Characters with no Morse code are left out, and a word made up only of such
+characters is left out whole, so `morse encode "A ~ B"` prints `.- / -...`.
+`encode` and `transmit` then name what was left out on stderr, without
+changing the exit code:
+
+```
+morse: warning: left out 1 character with no Morse code: '~' (U+007E)
 ```
 
 Multi-word Morse uses `/` as the word separator:
@@ -118,6 +144,9 @@ without encouraging you to count dits and dahs:
 morse transmit "PARIS" --wpm 20 --farnsworth-wpm 5   # 20 WPM characters, 5 WPM overall
 ```
 
+`--farnsworth-wpm` may not be higher than the character speed (`--wpm`, or
+the speed `-u` works out to, or the default 12 WPM); that is a usage error.
+
 ## Alphabets
 
 Besides International (Latin) Morse, the translator speaks the national
@@ -149,6 +178,52 @@ morse decode "---- .-.-. -.-. ..-. -..." -a japanese    # こんにちは
 Every table is parsed from the ITU-R M.1677-1-derived tables on Wikipedia
 (Korean from the Republic of Korea's radio-station operating regulation),
 and a unit test asserts no two letters in an alphabet share a code.
+
+### Decomposed and half-width input
+
+Text copied from file names, terminals or older systems often arrives with
+letters split into a base and a combining mark, or in half-width forms. The
+encoder rewrites the common cases before looking anything up
+(`morse_core::normalize_input`):
+
+| Input | Becomes |
+|---|---|
+| Cyrillic И + U+0306, Е + U+0308, І + U+0308 (either case) | Й, Ё, Ї |
+| Kana + combining dakuten/handakuten (U+3099, U+309A) | The precomposed kana (か + U+3099 → が); where none exists, the kana followed by a spacing ゛ or ゜ |
+| Half-width katakana and punctuation (U+FF61–U+FF9F) | Full-width, voiced marks combined (ｶﾞ → ガ) |
+| Hangul conjoining jamo (U+1100–U+1112, U+1161–U+1175, U+11A8–U+11C2) | Compatibility jamo, double and compound jamo as their component letters |
+
+This is a hand-written subset, not full Unicode normalisation. Not covered:
+other combining marks (decomposed accented Latin such as N + U+0303, Greek
+tonos, Hebrew points, Arabic vowel marks), archaic jamo, ligatures,
+presentation forms and full-width Latin letters. With those the base letter
+is sent and the rest is left out and reported, so precompose such text
+before encoding if the accent matters.
+
+### Codes with two readings
+
+Within an alphabet no two letters share a code, but a letter can share one
+with a punctuation mark or a prosign from the international table. On
+decode **the alphabet's own letter wins**. A unit test lists every such
+case, and fails if a table change adds or removes one. Today only Wabun has
+any:
+
+| Code | Decoded with `-a japanese` | Other reading (every other alphabet) |
+|---|---|---|
+| `-.--.` | る | `(`, `<KN>` |
+| `.-...` | お | `&`, `<AS>` |
+| `-.-.-` | さ | `<CT>` |
+| `-...-` | め | `=`, `<BT>` |
+| `-..-.` | も | `/` |
+| `.-.-.` | ん | `+`, `<AR>` |
+| `.-.-.-` | 、 | `.` |
+| `-.--.-` | （ | `)` |
+| `.-..-.` | ） | `"` |
+
+So Japanese text containing `( & = / + . ) "` or those prosigns does not
+round-trip: the code is sent correctly and read back as the kana. No letter
+in any alphabet shares a code with a digit. Between punctuation and
+prosigns, punctuation wins (see the prosign note above).
 
 ## Usage — GUI
 
@@ -188,12 +263,13 @@ miniature — everything else is just more letters.
 
 ```bash
 cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
 ```
 
 CI (`.github/workflows/ci.yml`) runs all three on **Ubuntu, macOS, and
-Windows** for every push/PR, and builds per-OS release binaries on tags.
+Windows** for every push/PR, along with `cargo deny check` and `cargo vet
+check`, and builds per-OS release binaries on tags.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full workflow, and
 [`CHANGELOG.md`](CHANGELOG.md) for release history.

@@ -3,6 +3,7 @@ name = "morse-core"
 description = "Pure, side-effect-free Morse code encode/decode/timing logic shared by the CLI and GUI."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

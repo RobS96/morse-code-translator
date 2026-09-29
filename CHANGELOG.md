@@ -23,6 +23,23 @@ versioning follows [Semantic Versioning](https://semver.org/).
   `1200 / effective_wpm`, which gave about 10.9 WPM at 20/5. An effective
   speed at or above the character speed now gives standard timing
   instead of gaps shorter than standard.
+- `morse_core::encode_lossy_report` / `encode_lossy_report_in` return the
+  Morse together with the input characters that were dropped for having no
+  code (`EncodeReport { morse, skipped }`). `morse encode` and `morse
+  transmit` print a one-line warning on stderr naming them; the exit code
+  is unchanged.
+- `morse_core::normalize_input`, applied to all encoder input: decomposed
+  Cyrillic Й/Ё/Ї, kana with combining dakuten/handakuten, half-width
+  katakana and Hangul conjoining jamo now encode like their usual forms.
+  Half-width katakana is detected as Japanese. Other combining marks are
+  not covered; see the README.
+- `morse-cli`: `--help`/`-h` and `--version`/`-V`; `--name=value` for long
+  options.
+- Release archives include a CycloneDX SBOM per crate, and releases carry
+  per-platform `SHA256SUMS-<platform>.txt` files and GitHub build
+  provenance attestations.
+- `rust-version` is declared: 1.88 for `morse-core` and `morse-cli`, 1.95
+  for `morse-gui`.
 
 - Farnsworth timing: characters transmit at one WPM speed while
   letter/word gaps stretch to a slower "effective" WPM — the method
@@ -39,12 +56,37 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `morse-cli` options may come before or after the text. Previously the
+  second argument was always taken as the text, so `morse decode -a
+  cyrillic ".-"` decoded `-a`.
+- `morse-cli` usage errors (exit code 1) that used to be accepted: an
+  option with its value missing, a misspelt option, more than one text
+  argument, an argument after `alphabets`, and a `--farnsworth-wpm` above
+  the character speed (previously sent with standard timing).
+- Release builds use `codegen-units = 1`, strip symbols and keep integer
+  overflow checks on.
+- The committed `sbom.json` files are removed; SBOMs are generated at
+  release time instead.
 - `morse-core`'s letter tables build once via `std::sync::LazyLock`
   instead of being reconstructed into a new `HashMap` on every
   `encode`/`decode`/`build_signal_plan` call.
 
+### Fixed
+
+- Decoding Hebrew restores the final letter form when the word ends in
+  punctuation, so `שלום.` round-trips instead of coming back as `שלומ.`.
+- A word with no encodable characters no longer produces an empty Morse
+  word or a doubled word gap: `encode("A ~ B")` is `.- / -...` (was
+  `.- /  / -...`), and the signal plan holds one word gap there, with none
+  leading or trailing.
+- `morse --help` continuation lines are aligned under their option text.
+
 ### Security
 
+- CI pins the versions of `cargo-deny` and `cargo-vet` it installs, builds
+  and tests with `--locked`, checks out without persisting credentials and
+  sets job timeouts. Release permissions for provenance (`id-token`,
+  `attestations`) are scoped to the release job.
 - `wpm_to_unit_ms` now clamps its result to a `MIN_UNIT_MS..=MAX_UNIT_MS`
   range: a zero, negative, NaN, or infinite WPM previously divided out to
   `+inf`, which a saturating float-to-int cast turned into a
