@@ -71,17 +71,45 @@ Linux under
 [Releases](https://github.com/RobS96/morse-code-translator/releases) —
 no Rust toolchain needed. Each archive carries a CycloneDX SBOM per crate
 under `sbom/`, and each platform has a `SHA256SUMS-<platform>.txt` beside
-it. To check a download:
+it. To check a download, run these in the folder holding the archive and
+its checksum file:
 
 ```bash
-sha256sum -c SHA256SUMS-linux-x86_64.txt      # shasum -a 256 -c on macOS
-gh attestation verify morse-*.tar.gz --repo RobS96/morse-code-translator
+# Linux
+sha256sum -c SHA256SUMS-linux-x86_64.txt
+# macOS
+shasum -a 256 -c SHA256SUMS-macos-universal.txt
 ```
+
+```powershell
+# Windows: compare with the hash in SHA256SUMS-windows-x86_64.txt
+Get-FileHash .\morse-*-windows-x86_64.zip -Algorithm SHA256
+```
+
+On any platform, [GitHub CLI](https://cli.github.com) can confirm the
+archive was built by this repository's release workflow:
+
+```bash
+gh attestation verify <archive> --repo RobS96/morse-code-translator
+```
+
+Things to know before running a downloaded binary:
+
+- **macOS:** the binaries are not signed with an Apple Developer ID or
+  notarised, and there is no `.app` bundle. Gatekeeper blocks them when
+  they carry the quarantine flag a browser download adds; after verifying
+  the archive as above, clear it with
+  `xattr -d com.apple.quarantine morse morse-gui`.
+- **Linux:** the binaries are built on GitHub's current Ubuntu runner and
+  need a glibc at least as new as that release's. On an older distribution,
+  build from source. `morse-gui` also needs the X11/xkbcommon, OpenGL and
+  ALSA runtime libraries, which desktop installs already have.
+- **Windows:** SmartScreen may warn about an unsigned download.
 
 Alternatively, install just the CLI straight from a clone:
 
 ```bash
-cargo install --path morse-cli
+cargo install --locked --path morse-cli
 ```
 
 ## Usage — CLI
