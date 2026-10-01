@@ -36,7 +36,7 @@ fn main() {
     let back = morse_core::decode(&morse);
     assert_eq!(back, msg);
     let plan = morse_core::build_signal_plan("E");
-    assert_eq!(plan.len(), 2);
+    assert_eq!(plan.len(), 1);
     println!("morse-core smoke OK: {msg} -> {morse} -> {back}, plan len {}", plan.len());
 }
 RUST

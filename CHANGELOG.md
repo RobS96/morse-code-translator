@@ -6,6 +6,66 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `morse_core::decode_lossy_report` / `decode_lossy_report_in` return the
+  text together with the codes that were dropped for not being recognised
+  (`DecodeReport { text, skipped }`). `morse decode` prints a one-line
+  warning on stderr naming them; it used to drop them silently.
+- `morse-cli`: `--strict` for `encode` and `decode` exits with code 2 when
+  anything was left out. The translation and the warning are still
+  printed.
+- `morse-cli` reads the text from standard input when no text argument is
+  given and standard input is not a terminal (`echo SOS | morse encode`).
+- `decode` reads common look-alike characters: `·` `•` as a dot, `−` `–`
+  `—` `_` as a dash, `…` as three dots and `|` as the word separator.
+- Accented Latin decodes: every extension code that nothing else uses
+  gives one letter (Ä, Å, Ç, CH, Ð, É, È, Ĝ, Ĵ, Ñ, Ö, Ś, Þ, Ü, Ź, Ż).
+  `MÜNCHEN` now round-trips; it used to come back as `MNCHEN`.
+- Decoding into a non-Latin alphabet gives the Latin letter for a code
+  the alphabet has no letter of its own for (J, U, V in Greek; F, V, X, Y
+  in Hebrew), instead of dropping it. Native letters are unaffected.
+- Prosigns `<SOS>` and `<HH>` (error, eight dots), and `<VE>`, `<KA>`,
+  `<VA>` as other spellings of `<SN>`, `<CT>`, `<SK>` on encode.
+- Per ITU-R M.1677-1, `×` is sent as X and `%` as `0/0`, joined to a
+  number before it by a hyphen (`2%` is `2-0/0`). Arabic ة is sent as ه.
+  The zero-width non-joiner (U+200C) is ignored instead of being reported
+  as a dropped character.
+
+### Changed
+
+- `build_signal_plan` / `build_signal_plan_in` no longer end with a
+  `Signal::LetterGap`: the plan stops at the last dot or dash, so a
+  transmission no longer waits out a letter gap (seconds, at Farnsworth
+  speeds) after the final letter.
+- `morse-cli` usage errors (exit code 1) that used to be accepted: a
+  `-g` gap unit shorter than the character unit; `--wpm` or
+  `--farnsworth-wpm` outside 1 to 100 WPM; `--wpm` together with `-u`,
+  and `--farnsworth-wpm` together with `-g` (one of each pair used to be
+  ignored).
+- `morse-cli` exits with code 3 when standard input cannot be read or the
+  output cannot be written. The usage text names the program by its file
+  name rather than the path it was run by, and lists the exit codes.
+- `Alphabet::detect` no longer picks Japanese for text whose only
+  Japanese-looking characters are CJK punctuation (U+3000 to U+303F, such
+  as an ideographic space), so Latin text containing one keeps its Latin
+  bracket codes. Kana still select Japanese; `、。` alone need
+  `-a japanese`.
+
+### Fixed
+
+- `morse-cli` no longer panics (exit code 101) when its output is closed
+  early, as in `morse encode "SOS" | true` or `morse transmit ... | head
+  -1`: it stops quietly with exit code 0. A closed stderr no longer
+  panics either.
+- `morse-cli` no longer panics on an argument that is not valid UTF-8; it
+  is a usage error.
+- A prosign inside a word is sent fused (`SOS<SK>`), so what `decode`
+  writes for a prosign that follows a letter encodes back to the same
+  Morse. It used to be sent letter by letter with the brackets dropped.
+- `decode` no longer leaves a double space where a word is empty or
+  wholly unrecognised: `decode(".- // -...")` is `A B`.
+
 ## [0.3.0] - 2026-09-29
 
 ### Added

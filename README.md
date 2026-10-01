@@ -117,6 +117,7 @@ cargo install --locked --path morse-cli
 ```bash
 morse encode "SOS"                 # -> ... --- ...
 morse decode "... --- ..."         # -> SOS
+echo "SOS" | morse encode          # no text argument: read it from stdin
 morse transmit "HELLO WORLD"       # flashes + beeps it live in your terminal
 morse transmit "SOS" --wpm 25      # faster: 25 words-per-minute
 morse transmit "SOS" -u 60         # or set the raw unit length directly (ms)
@@ -131,14 +132,33 @@ so it arrives as one argument. Morse that starts with a dash (`morse decode
 with its value missing, or a second piece of text is a usage error (exit
 code 1).
 
+With no text argument, the text is read from standard input, unless that is
+a terminal. A terminal, or standard input with nothing on it, is the usual
+`missing text` usage error. `-` is not a stand-in for standard input: it is
+the Morse for T.
+
 Characters with no Morse code are left out, and a word made up only of such
 characters is left out whole, so `morse encode "A ~ B"` prints `.- / -...`.
-`encode` and `transmit` then name what was left out on stderr, without
-changing the exit code:
+`decode` does the same with codes it does not recognise. Each command then
+names what was left out on stderr:
 
 ```
 morse: warning: left out 1 character with no Morse code: '~' (U+007E)
+morse: warning: left out 1 code not recognised in the latin alphabet: "..--..--"
 ```
+
+That does not change the exit code unless you pass `--strict` to `encode`
+or `decode`; the translation is printed either way.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | Success |
+| 1 | Usage error; the usage text follows the message on stderr |
+| 2 | `--strict` was given and something was left out |
+| 3 | Standard input could not be read (it must be UTF-8), or the output could not be written |
+
+Output that is closed early, as in `morse transmit "CQ" | head -1`, ends the
+program quietly with exit code 0.
 
 Multi-word Morse uses `/` as the word separator:
 
@@ -146,15 +166,28 @@ Multi-word Morse uses `/` as the word separator:
 morse decode ".... .. / - .... . .-. ."   # -> HI THERE
 ```
 
+`decode` also reads the look-alike characters that typeset Morse and
+autocorrect put in place of dots and dashes: `·` and `•` as a dot; `−`
+(minus), `–`, `—` and `_` as a dash; `…` as three dots; and `|` as the word
+separator. Each long dash counts as **one** dash. If your editor's "smart
+dashes" turned a typed `--` into a single `—`, that information is gone and
+the result will be wrong: turn smart punctuation off when typing Morse.
+
 **Procedural signs ("prosigns").** Common ham-radio prosigns — `<AR>`
 (end of message), `<SK>` (end of contact), `<BT>` (new paragraph/break),
 `<KN>` (over to a specific station), `<AS>` (wait), `<CT>` (start
-copying), `<BK>`, `<SN>` — encode as a single fused character with no
-inter-letter gap, matching how they're actually sent on the air:
+copying), `<BK>`, `<SN>`, `<HH>` (error, eight dots) and `<SOS>` — encode
+as a single fused character with no inter-letter gap, matching how they're
+actually sent on the air:
 
 ```bash
 morse encode "CQ CQ DE W1AW <KN>"
 ```
+
+`<VE>`, `<KA>` and `<VA>` are accepted as other spellings of `<SN>`, `<CT>`
+and `<SK>` (the same codes); `decode` writes the latter. A prosign can sit
+inside a word, as in `SOS<SK>`, which is also how `decode` writes one that
+follows a letter with no word gap between them.
 
 > Some prosigns (`AR`, `AS`, `BT`, `KN`) happen to share their fused code
 > with an existing punctuation mark (`+`, `&`, `=`, `(`) — that's real
@@ -172,8 +205,12 @@ without encouraging you to count dits and dahs:
 morse transmit "PARIS" --wpm 20 --farnsworth-wpm 5   # 20 WPM characters, 5 WPM overall
 ```
 
+`--wpm` and `--farnsworth-wpm` take a speed from 1 to 100 WPM.
 `--farnsworth-wpm` may not be higher than the character speed (`--wpm`, or
 the speed `-u` works out to, or the default 12 WPM); that is a usage error.
+So is a raw gap unit (`-g`) shorter than the character unit, and so is
+giving both options of a pair that set the same thing: `--wpm` with `-u`,
+or `--farnsworth-wpm` with `-g`.
 
 ## Alphabets
 
@@ -187,13 +224,19 @@ accepted too.
 | | Encode (text → Morse) | Decode (Morse → text) |
 |---|---|---|
 | Alphabet choice | Detected from the text; override with `--alphabet` | `--alphabet`, default `latin`: the same dots and dashes mean different letters in each alphabet |
-| Normalisation | Lowercase, Greek tonos, Hebrew final letters, Ё, katakana, small kana, voiced kana (が → か + ゛) and Hangul syllables (한 → ㅎㅏㄴ) are all accepted | Hebrew final forms are restored at word ends and voiced kana are recomposed; Korean comes back as jamo, because regrouping jamo into syllables is ambiguous |
-| Accented Latin (Ä, Ñ, Ś, …) | Encoded with their extension codes | Decoded as plain ASCII: most extension codes are shared (Ä/Æ/Ą) or collide with prosigns |
+| Normalisation | Lowercase, Greek tonos, Hebrew final letters, Ё, Arabic ة (sent as ه), katakana, small kana, voiced kana (が → か + ゛) and Hangul syllables (한 → ㅎㅏㄴ) are all accepted | Hebrew final forms are restored at word ends and voiced kana are recomposed; Korean comes back as jamo, because regrouping jamo into syllables is ambiguous |
+| Accented Latin (Ä, Ñ, Ś, …) | Encoded with their extension codes | Each extension code decodes to one letter: `.-.-` Ä, `.--.-` Å, `-.-..` Ç, `----` CH, `..--.` Ð, `..-..` É, `.-..-` È, `--.-.` Ĝ, `.---.` Ĵ, `--.--` Ñ, `---.` Ö, `...-...` Ś, `.--..` Þ, `..--` Ü, `--..-.` Ź, `--..-` Ż. Letters that share a code come back as the one listed (Æ and Ą as Ä, Ł as È). `...-.` is the prosign `<SN>`, so Ŝ does not round-trip |
+| Latin letters in another alphabet | Always accepted (`QTH Москва`) | Decoded only where the alphabet has no letter of its own for the code (J, U and V in Greek); otherwise the alphabet's letter wins |
+| `×` and `%` | Per ITU-R M.1677-1, `×` is sent as X and `%` as `0/0`, joined to a number before it by a hyphen (`2%` → `2-0/0`) | Read back as sent: `X`, `2-0/0` |
 
 Arabic and Persian share letters but not codes (خ is `---` in Arabic and
 `-..-` in Persian). Text containing a Persian-only letter (پ چ ژ گ ک ی)
 is detected as Persian; anything else in Arabic script is detected as
 Arabic. Pass `-a persian` or `-a arabic` to be explicit.
+
+Kana make text Japanese. CJK punctuation on its own (an ideographic space,
+`、`, `。`) does not, since other scripts use it too; pass `-a japanese` to
+send such text with the Wabun codes.
 
 ```bash
 morse alphabets                                        # list them
@@ -220,6 +263,7 @@ encoder rewrites the common cases before looking anything up
 | Kana + combining dakuten/handakuten (U+3099, U+309A) | The precomposed kana (か + U+3099 → が); where none exists, the kana followed by a spacing ゛ or ゜ |
 | Half-width katakana and punctuation (U+FF61–U+FF9F) | Full-width, voiced marks combined (ｶﾞ → ガ) |
 | Hangul conjoining jamo (U+1100–U+1112, U+1161–U+1175, U+11A8–U+11C2) | Compatibility jamo, double and compound jamo as their component letters |
+| Zero-width non-joiner (U+200C), written inside Persian words | Removed: neither a letter nor a word break |
 
 This is a hand-written subset, not full Unicode normalisation. Not covered:
 other combining marks (decomposed accented Latin such as N + U+0303, Greek
