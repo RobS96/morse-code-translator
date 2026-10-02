@@ -6,6 +6,32 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Ukrainian Morse alphabet: `Alphabet::Ukrainian` in `morse-core`,
+  `-a ukrainian` (or `uk`, `українська`) in `morse-cli`, listed by
+  `morse alphabets`, and **Українська** in the `morse-gui` alphabet picker.
+  И is `-.--`, І `..`, Є `..-..` and Ї `.---.`, and each decodes to itself;
+  Ґ is sent with Г's code (`--.`) and reads back as Г. Russian Ы, Э, Ъ and
+  Ё have no code in it and are reported as left out.
+
+### Changed
+
+- `-a uk` (`Alphabet::from_name("uk")`) selects the Ukrainian alphabet. It
+  used to select the Russian table, which sent И as `..` and decoded `..`
+  as И, `-.--` as Ы and `..-..` as Э. `-a ru`, `russian`, `cyrillic` and
+  `bg` select the Russian table as before, and it still sends І, Є and Ї.
+- Cyrillic text containing І, Ї, Є or Ґ and none of Ы, Э, Ъ, Ё is detected
+  as Ukrainian (`Alphabet::detect`, so `encode`, `transmit`, `wav` and the
+  GUI when no alphabet is chosen). Its И is now sent as `-.--`, not `..`,
+  and its Ґ as `--.` instead of being left out: `morse encode "ПРИВІТ"`
+  gives `.--. .-. -.-- .-- .. -`, where it gave `.--. .-. .. .-- .. -`.
+  All other Cyrillic text is detected and sent as before; `-a ru` sends
+  Ukrainian letters with the Russian table.
+- `morse_core::Alphabet` has a ninth variant and `Alphabet::ALL` is
+  `[Alphabet; 9]`: code that matches on `Alphabet` exhaustively, or names
+  the array's length, needs updating.
+
 ## [0.4.0] - 2026-10-02
 
 ### Added

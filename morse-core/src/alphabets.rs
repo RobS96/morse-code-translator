@@ -4,12 +4,15 @@
 //! from Wikipedia's "Morse code for non-Latin alphabets", "Wabun code" and
 //! "Morse code" articles on 2026-09-25, which in turn cite ITU-R M.1677-1
 //! and, for Korean, the Republic of Korea's 무선국의 운용에 대한 규정
-//! (2025-08-12, 별표1). No table maps two letters to the same code.
+//! (2025-08-12, 별표1). The Ukrainian table names its own sources. No table
+//! maps two letters to the same code.
 //!
 //! Encoding is script-aware because some scripts share codepoints but not
 //! codes: Arabic and Persian both use U+062E (خ), sent `---` in Arabic Morse
-//! but `-..-` in Persian Morse. Decoding is always ambiguous without an
-//! alphabet, since `.-` is A, А, Α, א, ا, い or ㅗ depending on the table.
+//! but `-..-` in Persian Morse, and Russian and Ukrainian both use U+0418
+//! (И), sent `..` in Russian Morse but `-.--` in Ukrainian Morse. Decoding
+//! is always ambiguous without an alphabet, since `.-` is A, А, Α, א, ا, い
+//! or ㅗ depending on the table.
 
 /// A Morse alphabet: which table letters are encoded with and decoded to.
 ///
@@ -20,8 +23,13 @@ pub enum Alphabet {
     /// International (ITU) Latin, plus accented-letter extensions: all of
     /// them on encode, one letter per unambiguous code on decode.
     Latin,
-    /// Russian national standard, plus Ukrainian І/Є/Ї and Bulgarian Ъ.
+    /// Russian national standard, plus Bulgarian Ъ and, so that they are
+    /// not dropped, the Ukrainian letters І and Є (sent as И and Э) and Ї.
+    /// Ukrainian text has a table of its own, [`Alphabet::Ukrainian`].
     Cyrillic,
+    /// Ukrainian national table: Є, І and Ї, and И on the code Russian
+    /// Morse gives Ы. Ґ is sent as Г. Russian Ы, Э, Ъ and Ё have no code.
+    Ukrainian,
     Greek,
     Hebrew,
     Arabic,
@@ -34,9 +42,10 @@ pub enum Alphabet {
 }
 
 impl Alphabet {
-    pub const ALL: [Alphabet; 8] = [
+    pub const ALL: [Alphabet; 9] = [
         Alphabet::Latin,
         Alphabet::Cyrillic,
+        Alphabet::Ukrainian,
         Alphabet::Greek,
         Alphabet::Hebrew,
         Alphabet::Arabic,
@@ -50,6 +59,7 @@ impl Alphabet {
         match self {
             Alphabet::Latin => "latin",
             Alphabet::Cyrillic => "cyrillic",
+            Alphabet::Ukrainian => "ukrainian",
             Alphabet::Greek => "greek",
             Alphabet::Hebrew => "hebrew",
             Alphabet::Arabic => "arabic",
@@ -64,6 +74,7 @@ impl Alphabet {
         match self {
             Alphabet::Latin => "Latin",
             Alphabet::Cyrillic => "Кириллица",
+            Alphabet::Ukrainian => "Українська",
             Alphabet::Greek => "Ελληνικά",
             Alphabet::Hebrew => "עברית",
             Alphabet::Arabic => "العربية",
@@ -78,7 +89,8 @@ impl Alphabet {
         let n = name.trim().to_lowercase();
         Some(match n.as_str() {
             "latin" | "international" | "itu" | "en" => Alphabet::Latin,
-            "cyrillic" | "russian" | "ru" | "uk" | "bg" => Alphabet::Cyrillic,
+            "cyrillic" | "russian" | "ru" | "bg" => Alphabet::Cyrillic,
+            "ukrainian" | "uk" | "українська" => Alphabet::Ukrainian,
             "greek" | "el" => Alphabet::Greek,
             "hebrew" | "he" | "iw" => Alphabet::Hebrew,
             "arabic" | "ar" => Alphabet::Arabic,
@@ -91,15 +103,29 @@ impl Alphabet {
 
     /// Guess the alphabet from the first letter of a recognised script.
     /// Arabic-script text is treated as Persian only if it contains a
-    /// Persian-only letter (پ چ ژ گ ک ی). Text with no such letter is Latin.
-    /// CJK punctuation (U+3000..=U+303F, ideographic space included) is
-    /// common to several scripts and does not count as a letter.
+    /// Persian-only letter (پ چ ژ گ ک ی). Cyrillic-script text is treated as
+    /// Ukrainian only if it contains a Ukrainian-only letter (І Ї Є Ґ) and
+    /// no Russian-only one (Ы Э Ъ Ё), in either case; with neither, or with
+    /// both, it is Cyrillic. Text with no letter of a recognised script is
+    /// Latin. CJK punctuation (U+3000..=U+303F, ideographic space included)
+    /// is common to several scripts and does not count as a letter.
     pub fn detect(text: &str) -> Alphabet {
         let persian_only = ['پ', 'چ', 'ژ', 'گ', 'ک', 'ی'];
+        let ukrainian_only = ['І', 'Ї', 'Є', 'Ґ', 'і', 'ї', 'є', 'ґ'];
+        let russian_only = ['Ы', 'Э', 'Ъ', 'Ё', 'ы', 'э', 'ъ', 'ё'];
         for c in text.chars() {
             let a = match c as u32 {
                 0x0370..=0x03FF | 0x1F00..=0x1FFF => Alphabet::Greek,
-                0x0400..=0x04FF => Alphabet::Cyrillic,
+                0x0400..=0x04FF => {
+                    // Normalised, so that a decomposed Ё (Е + U+0308) counts.
+                    let text = normalize_input(text);
+                    let has = |letters: &[char]| text.chars().any(|c| letters.contains(&c));
+                    if has(&ukrainian_only) && !has(&russian_only) {
+                        Alphabet::Ukrainian
+                    } else {
+                        Alphabet::Cyrillic
+                    }
+                }
                 0x0590..=0x05FF => Alphabet::Hebrew,
                 0x0600..=0x06FF => {
                     if text.chars().any(|c| persian_only.contains(&c)) {
@@ -122,6 +148,7 @@ impl Alphabet {
         match self {
             Alphabet::Latin => &[],
             Alphabet::Cyrillic => CYRILLIC,
+            Alphabet::Ukrainian => UKRAINIAN,
             Alphabet::Greek => GREEK,
             Alphabet::Hebrew => HEBREW,
             Alphabet::Arabic => ARABIC,
@@ -132,11 +159,12 @@ impl Alphabet {
     }
 
     /// Extra characters accepted on encode only, each mapped to the letter
-    /// whose code it is sent with (final forms, tonos, Ё, small kana...).
+    /// whose code it is sent with (final forms, tonos, Ё, Ґ, small kana...).
     #[rustfmt::skip]
     pub(crate) fn encode_aliases(self) -> &'static [(char, char)] {
         match self {
             Alphabet::Cyrillic => &[('Ё', 'Е')],
+            Alphabet::Ukrainian => &[('Ґ', 'Г')],
             Alphabet::Greek => &[
                 ('Ά', 'Α'), ('Έ', 'Ε'), ('Ή', 'Η'), ('Ί', 'Ι'), ('Ό', 'Ο'),
                 ('Ύ', 'Υ'), ('Ώ', 'Ω'), ('Ϊ', 'Ι'), ('Ϋ', 'Υ'),
@@ -188,7 +216,37 @@ const CYRILLIC: &[(char, &str)] = &[
     ('Я', ".-.-"), ('Ї', ".---."),
     // Encode-only variants that reuse a Russian code (decode prefers the
     // Russian letter, listed first above): Ukrainian І/Є, Bulgarian Ъ.
+    // With Ї above, they keep Ukrainian letters from being dropped when
+    // text is sent with this alphabet: because it was asked for by name, or
+    // because the text has Russian-only letters as well. Ukrainian text
+    // proper is sent with UKRAINIAN, where И has another code and these
+    // letters decode.
     ('І', ".."), ('Є', "..-.."), ('Ъ', "-..-"),
+];
+
+/// Ukrainian, in alphabet order: the regulation ("Регламент") column of the
+/// alphabet table in Ukrainian Wikipedia's «Абетка Морзе», but for Ї. It
+/// agrees with English Wikipedia's "Morse code for non-Latin alphabets"
+/// (both as of 2026-10-02): Є where Russian Morse has Э, І where it has И,
+/// И on the code of Russian Ы, and Ї in addition.
+///
+/// - Ї is `.---.`, as English Wikipedia and the other column of the
+///   Ukrainian table give it. The regulation column sends Ї with І's code,
+///   `..`, which could never decode back to Ї; `.---.` round-trips, and is
+///   what [`CYRILLIC`] sends Ї as too.
+/// - Ґ has Г's code, `--.`. It is encode-only (an
+///   [`Alphabet::encode_aliases`] entry), and `--.` decodes to Г.
+/// - The Russian letters Ы, Э, Ъ and Ё are not in the Ukrainian alphabet
+///   and have no code here, not even another letter's: they are left out
+///   and reported like any other character without a code.
+#[rustfmt::skip]
+const UKRAINIAN: &[(char, &str)] = &[
+    ('А', ".-"), ('Б', "-..."), ('В', ".--"), ('Г', "--."), ('Д', "-.."), ('Е', "."),
+    ('Є', "..-.."), ('Ж', "...-"), ('З', "--.."), ('И', "-.--"), ('І', ".."), ('Ї', ".---."),
+    ('Й', ".---"), ('К', "-.-"), ('Л', ".-.."), ('М', "--"), ('Н', "-."), ('О', "---"),
+    ('П', ".--."), ('Р', ".-."), ('С', "..."), ('Т', "-"), ('У', "..-"), ('Ф', "..-."),
+    ('Х', "...."), ('Ц', "-.-."), ('Ч', "---."), ('Ш', "----"), ('Щ', "--.-"), ('Ь', "-..-"),
+    ('Ю', "..--"), ('Я', ".-.-"),
 ];
 
 #[rustfmt::skip]
@@ -549,6 +607,116 @@ mod tests {
         assert_eq!(Alphabet::detect("カタカナ"), Alphabet::Japanese);
         assert_eq!(Alphabet::detect("한글"), Alphabet::Korean);
         assert_eq!(Alphabet::detect("123 ..."), Alphabet::Latin);
+    }
+
+    #[test]
+    fn cyrillic_text_is_ukrainian_with_a_ukrainian_letter_and_no_russian_one() {
+        for text in [
+            "привіт",
+            "ПРИВІТ",
+            "Київ",
+            "їжак",
+            "Є",
+            "ґанок",
+            "Ґ",
+            "QTH Київ",
+            "і\u{0308}жак",
+        ] {
+            assert_eq!(Alphabet::detect(text), Alphabet::Ukrainian, "{text}");
+        }
+        // Neither group of letters: Ukrainian words spelt only with letters
+        // Russian has too are not told apart.
+        for text in ["привет", "МОСКВА", "добрий день", "София"] {
+            assert_eq!(Alphabet::detect(text), Alphabet::Cyrillic, "{text}");
+        }
+        // A Russian-only letter, with or without a Ukrainian-only one.
+        for text in ["это", "ЁЖ", "съезд", "мы", "България"] {
+            assert_eq!(Alphabet::detect(text), Alphabet::Cyrillic, "{text}");
+        }
+        for text in ["Київ это", "ЫІ", "ґ ъ", "їжак ёж", "і е\u{0308}ж"] {
+            assert_eq!(Alphabet::detect(text), Alphabet::Cyrillic, "{text}");
+        }
+        // The first letter of a recognised script still picks the script.
+        assert_eq!(Alphabet::detect("γειά і"), Alphabet::Greek);
+        assert_eq!(Alphabet::detect("і"), Alphabet::Ukrainian);
+    }
+
+    #[test]
+    fn names_and_aliases_parse() {
+        for a in Alphabet::ALL {
+            assert_eq!(Alphabet::from_name(a.id()), Some(a));
+        }
+        for name in ["uk", "ukrainian", "українська", "Українська", " UK "] {
+            assert_eq!(
+                Alphabet::from_name(name),
+                Some(Alphabet::Ukrainian),
+                "{name}"
+            );
+        }
+        for name in ["ru", "russian", "cyrillic", "bg"] {
+            assert_eq!(
+                Alphabet::from_name(name),
+                Some(Alphabet::Cyrillic),
+                "{name}"
+            );
+        }
+        assert_eq!(Alphabet::from_name("klingon"), None);
+    }
+
+    #[test]
+    fn ids_and_native_names_are_distinct() {
+        let ids: HashSet<&str> = Alphabet::ALL.iter().map(|a| a.id()).collect();
+        let names: HashSet<&str> = Alphabet::ALL.iter().map(|a| a.native_name()).collect();
+        assert_eq!(ids.len(), Alphabet::ALL.len());
+        assert_eq!(names.len(), Alphabet::ALL.len());
+        assert_eq!(Alphabet::Ukrainian.id(), "ukrainian");
+        assert_eq!(Alphabet::Ukrainian.native_name(), "Українська");
+    }
+
+    #[test]
+    fn ukrainian_alphabet_encodes_and_decodes_letter_for_letter() {
+        let letters = "АБВГДЕЄЖЗИІЇЙКЛМНОПРСТУФХЦЧШЩЬЮЯ";
+        let codes = ".- -... .-- --. -.. . ..-.. ...- --.. -.-- .. .---. .--- -.- .-.. -- -. --- \
+                     .--. .-. ... - ..- ..-. .... -.-. ---. ---- --.- -..- ..-- .-.-";
+        assert_eq!(crate::encode_in(letters, Alphabet::Ukrainian), codes);
+        assert_eq!(crate::decode_in(codes, Alphabet::Ukrainian), letters);
+        assert_eq!(
+            crate::encode_in(&letters.to_lowercase(), Alphabet::Ukrainian),
+            codes
+        );
+    }
+
+    #[test]
+    fn ukrainian_ghe_with_upturn_is_sent_as_ghe() {
+        let report = crate::encode_lossy_report_in("ґанок Ґ", Alphabet::Ukrainian);
+        assert_eq!(
+            report.morse,
+            crate::encode_in("ГАНОК Г", Alphabet::Ukrainian)
+        );
+        assert_eq!(report.skipped, vec![]);
+        assert_eq!(
+            crate::decode_in(&report.morse, Alphabet::Ukrainian),
+            "ГАНОК Г"
+        );
+    }
+
+    #[test]
+    fn russian_only_letters_have_no_code_in_ukrainian() {
+        let report = crate::encode_lossy_report_in("ЫЭЪЁ ыэъё Я", Alphabet::Ukrainian);
+        assert_eq!(report.morse, ".-.-");
+        assert_eq!(report.skipped, vec!['Ы', 'Э', 'Ъ', 'Ё', 'ы', 'э', 'ъ', 'ё']);
+        // Decomposed Ё is composed first, and is no more Ukrainian for it.
+        let report = crate::encode_lossy_report_in("Е\u{0308}", Alphabet::Ukrainian);
+        assert_eq!(report.morse, "");
+        assert_eq!(report.skipped, vec!['Ё']);
+    }
+
+    #[test]
+    fn cyrillic_still_sends_ukrainian_letters_with_russian_codes() {
+        let report = crate::encode_lossy_report_in("ІЄЇ", Alphabet::Cyrillic);
+        assert_eq!(report.morse, ".. ..-.. .---.");
+        assert_eq!(report.skipped, vec![]);
+        assert_eq!(crate::decode_in(&report.morse, Alphabet::Cyrillic), "ИЭЇ");
     }
 
     #[test]

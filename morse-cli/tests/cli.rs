@@ -400,6 +400,105 @@ fn encode_and_decode_print_the_result_on_stdout_and_exit_zero() {
 }
 
 #[test]
+fn ukrainian_text_is_detected_and_uk_selects_the_ukrainian_alphabet() {
+    let output = morse(&["encode", "ПРИВІТ"]);
+    assert_exit(&output, 0);
+    assert_eq!(stdout(&output), ".--. .-. -.-- .-- .. -\n");
+    assert_eq!(stderr(&output), "");
+
+    for name in ["uk", "ukrainian", "українська"] {
+        let output = morse(&["decode", "-a", name, ".--. .-. -.-- .-- .. -"]);
+        assert_exit(&output, 0);
+        assert_eq!(stdout(&output), "ПРИВІТ\n", "{name}");
+        assert_eq!(stderr(&output), "");
+    }
+    let output = morse(&["decode", "-a", "uk", "..-.. / .. / .---. / --."]);
+    assert_eq!(stdout(&output), "Є І Ї Г\n");
+
+    // Text with no Ukrainian-only letter needs the option.
+    let output = morse(&["encode", "-a", "uk", "МИР"]);
+    assert_eq!(stdout(&output), "-- -.-- .-.\n");
+    let output = morse_with_stdin(&["encode"], "привіт\n".as_bytes());
+    assert_eq!(stdout(&output), ".--. .-. -.-- .-- .. -\n");
+}
+
+#[test]
+fn russian_text_and_the_russian_alphabet_keep_their_codes() {
+    let output = morse(&["encode", "-a", "ru", "ПРИВЕТ"]);
+    assert_exit(&output, 0);
+    assert_eq!(stdout(&output), ".--. .-. .. .-- . -\n");
+    assert_eq!(stderr(&output), "");
+
+    for args in [
+        &["encode", "привет"][..],
+        &["encode", "ПРИВЕТ", "-a", "cyrillic"][..],
+        &["encode", "ПРИВЕТ", "-a", "russian"][..],
+    ] {
+        assert_eq!(stdout(&morse(args)), ".--. .-. .. .-- . -\n", "{args:?}");
+    }
+    // Asked for by name, the Russian table still sends Ukrainian letters.
+    let output = morse(&["encode", "-a", "ru", "ПРИВІТ"]);
+    assert_exit(&output, 0);
+    assert_eq!(stdout(&output), ".--. .-. .. .-- .. -\n");
+    assert_eq!(stderr(&output), "");
+    let output = morse(&["decode", "-a", "ru", ".. / ..-.. / -.--"]);
+    assert_eq!(stdout(&output), "И Э Ы\n");
+}
+
+#[test]
+fn russian_only_letters_are_left_out_of_ukrainian_and_named() {
+    let output = morse(&["encode", "-a", "uk", "МЫ", "--strict"]);
+    assert_exit(&output, 2);
+    assert_eq!(stdout(&output), "--\n");
+    assert_eq!(
+        stderr(&output),
+        "morse: warning: left out 1 character with no Morse code: 'Ы' (U+042B)\n"
+    );
+    let output = morse(&["decode", "-a", "uk", "-- ..--.."]);
+    assert_exit(&output, 0);
+    assert_eq!(stdout(&output), "М?\n");
+    let output = morse(&["decode", "-a", "uk", "-- ..--..--"]);
+    assert!(
+        stderr(&output).contains("ukrainian alphabet"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn transmit_and_wav_use_the_ukrainian_alphabet() {
+    let output = morse(&["transmit", "привіт", "-u", "1"]);
+    assert_exit(&output, 0);
+    assert!(
+        stdout(&output).contains("\n.--. .-. -.-- .-- .. -\n"),
+        "{}",
+        stdout(&output)
+    );
+    let output = morse(&["transmit", "-a", "uk", "И", "-u", "1"]);
+    assert_exit(&output, 0);
+    assert!(stdout(&output).contains("\n-.--\n"));
+    // Four tones: dash dot dash dash.
+    assert_eq!(stdout(&output).matches('\x07').count(), 4);
+
+    // И is `-.--` (13 units) in Ukrainian and `..` (3 units) in Russian.
+    let scratch = Scratch::new("wav-ukrainian");
+    let (uk, ru, detected) = (
+        scratch.path("uk.wav"),
+        scratch.path("ru.wav"),
+        scratch.path("detected.wav"),
+    );
+    assert_exit(&morse(&["wav", "И", "-a", "uk", "-o", &uk, "-u", "10"]), 0);
+    assert_exit(&morse(&["wav", "И", "-a", "ru", "-o", &ru, "-u", "10"]), 0);
+    assert_eq!(read_wav(&uk).samples.len(), 13 * 441);
+    assert_eq!(read_wav(&ru).samples.len(), 3 * 441);
+    // ІИ: `..` and `-.--` with a letter gap between them, 19 units.
+    let output = morse(&["wav", "іи", "-o", &detected, "-u", "10"]);
+    assert_exit(&output, 0);
+    assert_eq!(stderr(&output), "");
+    assert_eq!(read_wav(&detected).samples.len(), 19 * 441);
+}
+
+#[test]
 fn help_version_and_alphabets_go_to_stdout() {
     let output = morse(&["--help"]);
     assert_exit(&output, 0);
@@ -417,7 +516,8 @@ fn help_version_and_alphabets_go_to_stdout() {
     let output = morse(&["alphabets"]);
     assert_exit(&output, 0);
     assert!(stdout(&output).contains("cyrillic"));
-    assert_eq!(stdout(&output).lines().count(), 8);
+    assert!(stdout(&output).contains("ukrainian  Українська\n"));
+    assert_eq!(stdout(&output).lines().count(), 9);
     assert_eq!(stderr(&output), "");
 }
 

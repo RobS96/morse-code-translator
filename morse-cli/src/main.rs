@@ -48,10 +48,13 @@ fn usage(prog: &str) -> String {
          Options may come before or after the text. With no text argument, the\n\
          text is read from standard input, unless that is a terminal.\n\n\
          Options (encode/decode/transmit/wav):\n  \
-         -a, --alphabet <NAME>       latin, cyrillic, greek, hebrew, arabic, persian,\n  \
-         {pad:28}japanese (Wabun) or korean. Detected from the\n  \
-         {pad:28}text when omitted; decode defaults to latin\n  \
-         {pad:28}(Morse can't be detected).\n\n\
+         -a, --alphabet <NAME>       latin, cyrillic (Russian), ukrainian, greek,\n  \
+         {pad:28}hebrew, arabic, persian, japanese (Wabun) or\n  \
+         {pad:28}korean. Detected from the text when omitted;\n  \
+         {pad:28}decode defaults to latin (Morse can't be\n  \
+         {pad:28}detected). Cyrillic text is detected as\n  \
+         {pad:28}Ukrainian if it has one of і ї є ґ and none of\n  \
+         {pad:28}ы э ъ ё; otherwise pass -a uk for Ukrainian.\n\n\
          Options (encode/decode/wav):\n  \
          --strict                    Exit with code {EXIT_LOSSY} if anything was left out\n\n\
          Timing options (transmit/wav):\n  \
@@ -87,6 +90,7 @@ fn usage(prog: &str) -> String {
          {prog} decode \"... --- ...\"\n  \
          {prog} encode \"привет\"\n  \
          {prog} decode \".--. .-. .. .-- . -\" --alphabet cyrillic\n  \
+         {prog} decode \".--. .-. -.-- .-- .. -\" -a uk\n  \
          echo \"SOS\" | {prog} encode --strict\n  \
          {prog} transmit \"HELLO WORLD\" --wpm 20\n  \
          {prog} transmit --wpm 20 --farnsworth-wpm 5 \"HELLO WORLD\"\n  \
@@ -1417,12 +1421,24 @@ mod tests {
             resolve_alphabet(&request(&["decode", ".-", "--alphabet", "Wabun"])).unwrap(),
             Some(Alphabet::Japanese)
         );
+        for args in [
+            &["decode", ".-", "-a", "uk"][..],
+            &["decode", ".-", "-a", "ukrainian"][..],
+            &["decode", ".-", "--alphabet=Українська"][..],
+        ] {
+            assert_eq!(
+                resolve_alphabet(&request(args)).unwrap(),
+                Some(Alphabet::Ukrainian),
+                "{args:?}"
+            );
+        }
     }
 
     #[test]
     fn unknown_alphabet_is_a_usage_error_listing_the_choices() {
         let err = resolve_alphabet(&request(&["decode", ".-", "-a", "klingon"])).unwrap_err();
         assert!(err.contains("cyrillic") && err.contains("korean"), "{err}");
+        assert!(err.contains("ukrainian"), "{err}");
     }
 
     #[test]

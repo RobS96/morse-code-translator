@@ -221,8 +221,9 @@ const ENCODE_ONLY: &[(char, &str)] = &[('×', "-..-")];
 /// [`Alphabet::Latin`] one accented letter per extension code that nothing
 /// else uses, then the alphabet's letters, which win on any clash: a
 /// Latin letter is decoded only where the alphabet has no letter of its
-/// own for the code. The first letter listed for a code wins (so the
-/// Russian letter, not the Ukrainian/Bulgarian variant, is decoded).
+/// own for the code. The first letter listed for a code wins (so
+/// [`Alphabet::Cyrillic`] decodes the Russian letter, not the
+/// Ukrainian/Bulgarian variant listed after it).
 struct Tables {
     encode: HashMap<char, &'static str>,
     decode: HashMap<&'static str, String>,
@@ -436,8 +437,8 @@ pub fn encode(text: &str) -> String {
     encode_in(text, Alphabet::detect(text))
 }
 
-/// [`encode`] with an explicit alphabet. Matters for Arabic vs Persian,
-/// which share letters but not codes.
+/// [`encode`] with an explicit alphabet. Matters for Arabic vs Persian and
+/// for Russian vs Ukrainian, which share letters but not codes.
 pub fn encode_in(text: &str, alphabet: Alphabet) -> String {
     encode_lossy_report_in(text, alphabet).morse
 }
@@ -1093,6 +1094,7 @@ mod tests {
     fn non_latin_alphabets_round_trip() {
         for (text, alphabet) in [
             ("СОС ПРИВЕТ МИР", Alphabet::Cyrillic),
+            ("ПРИВІТ СВІТЕ ЇЖАК ЄДНІСТЬ", Alphabet::Ukrainian),
             ("ΚΑΛΗΜΕΡΑ ΚΟΣΜΕ", Alphabet::Greek),
             ("שלום עולם", Alphabet::Hebrew),
             ("سلام عليكم", Alphabet::Arabic),
@@ -1128,6 +1130,68 @@ mod tests {
         // Kha (U+062E) is --- in Arabic Morse and -..- in Persian Morse.
         assert_eq!(encode_in("خ", Alphabet::Arabic), "---");
         assert_eq!(encode_in("خ", Alphabet::Persian), "-..-");
+    }
+
+    #[test]
+    fn ukrainian_and_russian_share_letters_but_not_codes() {
+        // И is `-.--` in Ukrainian Morse, the code Russian Morse gives Ы,
+        // and `..` in Russian Morse, the code Ukrainian Morse gives І.
+        assert_eq!(encode_in("И", Alphabet::Ukrainian), "-.--");
+        assert_eq!(encode_in("И", Alphabet::Cyrillic), "..");
+        assert_eq!(encode("ПРИВІТ"), ".--. .-. -.-- .-- .. -");
+        assert_eq!(
+            encode_in("ПРИВІТ", Alphabet::Cyrillic),
+            ".--. .-. .. .-- .. -"
+        );
+        for (code, ukrainian, russian) in [
+            ("..", "І", "И"),
+            ("-.--", "И", "Ы"),
+            ("..-..", "Є", "Э"),
+            (".---.", "Ї", "Ї"),
+            ("--.", "Г", "Г"),
+            ("-..-", "Ь", "Ь"),
+        ] {
+            assert_eq!(decode_in(code, Alphabet::Ukrainian), ukrainian, "{code}");
+            assert_eq!(decode_in(code, Alphabet::Cyrillic), russian, "{code}");
+        }
+        // Every other letter the two have in common is sent the same way.
+        let shared = "АБВГДЕЖЗЙКЛМНОПРСТУФХЦЧШЩЬЮЯЇ";
+        assert_eq!(
+            encode_in(shared, Alphabet::Ukrainian),
+            encode_in(shared, Alphabet::Cyrillic)
+        );
+    }
+
+    #[test]
+    fn text_without_ukrainian_letters_keeps_the_russian_codes() {
+        assert_eq!(encode("привет"), ".--. .-. .. .-- . -");
+        assert_eq!(encode("ПРИВЕТ МИР"), ".--. .-. .. .-- . - / -- .. .-.");
+        assert_eq!(encode("ЭТО МЫ"), "..-.. - --- / -- -.--");
+        assert_eq!(
+            decode_in(".--. .-. .. .-- . -", Alphabet::Cyrillic),
+            "ПРИВЕТ"
+        );
+        for text in ["привет", "QTH МОСКВА", "ёж", "София", "ЫІ"] {
+            assert_eq!(encode(text), encode_in(text, Alphabet::Cyrillic), "{text}");
+            assert_eq!(
+                build_signal_plan(text),
+                build_signal_plan_in(text, Alphabet::Cyrillic),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn signal_plan_follows_the_detected_ukrainian_alphabet() {
+        assert_eq!(
+            build_signal_plan("привіт"),
+            build_signal_plan_in("ПРИВІТ", Alphabet::Ukrainian)
+        );
+        // И alone: dash dot dash dash.
+        assert_eq!(
+            build_signal_plan_in("и", Alphabet::Ukrainian),
+            vec![Signal::Dash, Signal::Dot, Signal::Dash, Signal::Dash]
+        );
     }
 
     #[test]
@@ -1319,6 +1383,24 @@ mod tests {
     }
 
     #[test]
+    fn cyrillic_and_ukrainian_have_a_letter_for_every_latin_code() {
+        // So the Latin fallback never applies in either: each of the 26
+        // Latin letters' codes decodes to a Cyrillic letter.
+        for alphabet in [Alphabet::Cyrillic, Alphabet::Ukrainian] {
+            for latin in 'A'..='Z' {
+                let decoded = decode_in(TABLE[&latin], alphabet);
+                assert!(
+                    decoded
+                        .chars()
+                        .all(|c| ('\u{0400}'..='\u{04FF}').contains(&c)),
+                    "{alphabet:?}: {latin} decoded to {decoded}"
+                );
+                assert_eq!(decoded.chars().count(), 1, "{alphabet:?}: {latin}");
+            }
+        }
+    }
+
+    #[test]
     fn native_letters_decode_exactly_as_listed() {
         // Whatever else a decode table falls back to, the first letter an
         // alphabet lists for a code is what that code decodes to.
@@ -1474,6 +1556,7 @@ mod tests {
             ("", Alphabet::Latin),
             (" / ", Alphabet::Latin),
             (".--. .-. .. .-- . -", Alphabet::Cyrillic),
+            (".--. .-. -.-- .-- .. -", Alphabet::Ukrainian),
             (".-.. ..", Alphabet::Japanese),
         ] {
             let report = decode_lossy_report_in(morse, alphabet);
@@ -1608,8 +1691,9 @@ mod tests {
             list
         };
         assert_eq!(sort(found), sort(expected));
-        // 54 shared characters in each of the 8 alphabets, at the least.
-        assert!(checked >= 8 * 54, "only {checked} entries checked");
+        // 54 shared characters in each of the 9 alphabets, at the least.
+        assert_eq!(Alphabet::ALL.len(), 9);
+        assert!(checked >= 9 * 54, "only {checked} entries checked");
     }
 
     #[test]

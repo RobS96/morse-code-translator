@@ -4,8 +4,8 @@
 //! to watch a flashing lamp and hear a tone play out the real timing —
 //! optionally with Farnsworth timing (fast characters, slower spacing),
 //! the internationally recommended way to learn Morse. Supports the Latin,
-//! Cyrillic, Greek, Hebrew, Arabic, Persian, Japanese (Wabun) and Korean
-//! Morse alphabets, with the interface in 12 languages.
+//! Cyrillic, Ukrainian, Greek, Hebrew, Arabic, Persian, Japanese (Wabun) and
+//! Korean Morse alphabets, with the interface in 12 languages.
 #![forbid(unsafe_code)]
 // A release build for Windows is a GUI program: no console window opens
 // alongside it.
@@ -173,7 +173,7 @@ impl MorseApp {
         }
         let script_needs_font = !matches!(
             self.effective_alphabet(),
-            Alphabet::Latin | Alphabet::Cyrillic | Alphabet::Greek
+            Alphabet::Latin | Alphabet::Cyrillic | Alphabet::Ukrainian | Alphabet::Greek
         );
         script_needs_font || self.lang.needs_cjk_font()
     }
