@@ -129,10 +129,16 @@ pub enum Msg {
     PsOverToYou,
     PsWait,
     PsStartCopying,
+    Stop,
+    ToneLabel,
+    VolumeLabel,
+    AudioUnavailable,
+    LeftOutChars,
+    LeftOutCodes,
 }
 
 impl Msg {
-    pub const ALL: [Msg; 26] = [
+    pub const ALL: [Msg; 32] = [
         Msg::AppTitle,
         Msg::TextToMorse,
         Msg::MorseToText,
@@ -159,12 +165,18 @@ impl Msg {
         Msg::PsOverToYou,
         Msg::PsWait,
         Msg::PsStartCopying,
+        Msg::Stop,
+        Msg::ToneLabel,
+        Msg::VolumeLabel,
+        Msg::AudioUnavailable,
+        Msg::LeftOutChars,
+        Msg::LeftOutCodes,
     ];
 }
 
 /// Translate `msg` into `lang`.
 pub fn tr(lang: Lang, msg: Msg) -> &'static str {
-    let row: [&'static str; 26] = match lang {
+    let row: [&'static str; 32] = match lang {
         Lang::En => [
             "Morse Code Translator",
             "Text → Morse",
@@ -192,6 +204,12 @@ pub fn tr(lang: Lang, msg: Msg) -> &'static str {
             "over to you, specifically",
             "wait",
             "start copying",
+            "Stop",
+            "Tone:",
+            "Volume:",
+            "No sound output available; only the lamp will flash.",
+            "Left out (no Morse code):",
+            "Left out (not recognised):",
         ],
         Lang::Es => [
             "Traductor de código Morse",
@@ -220,6 +238,12 @@ pub fn tr(lang: Lang, msg: Msg) -> &'static str {
             "cambio, a una estación concreta",
             "espere",
             "comience a copiar",
+            "Detener",
+            "Tono:",
+            "Volumen:",
+            "No hay salida de sonido disponible; solo parpadeará la lámpara.",
+            "Omitidos (sin código Morse):",
+            "Omitidos (no reconocidos):",
         ],
         Lang::Fr => [
             "Traducteur de code Morse",
@@ -248,6 +272,12 @@ pub fn tr(lang: Lang, msg: Msg) -> &'static str {
             "à vous, station désignée",
             "attendez",
             "début de transmission",
+            "Arrêter",
+            "Tonalité :",
+            "Volume :",
+            "Aucune sortie audio disponible ; seule la lampe clignotera.",
+            "Ignorés (sans code Morse) :",
+            "Ignorés (non reconnus) :",
         ],
         Lang::De => [
             "Morsecode-Übersetzer",
@@ -276,6 +306,12 @@ pub fn tr(lang: Lang, msg: Msg) -> &'static str {
             "Übergabe an eine bestimmte Station",
             "warten",
             "Beginn der Übermittlung",
+            "Stopp",
+            "Tonhöhe:",
+            "Lautstärke:",
+            "Keine Tonausgabe verfügbar; nur die Lampe blinkt.",
+            "Ausgelassen (kein Morsecode):",
+            "Ausgelassen (nicht erkannt):",
         ],
         Lang::It => [
             "Traduttore di codice Morse",
@@ -304,6 +340,12 @@ pub fn tr(lang: Lang, msg: Msg) -> &'static str {
             "passo a una stazione specifica",
             "attendere",
             "inizio trasmissione",
+            "Ferma",
+            "Tono:",
+            "Volume:",
+            "Nessuna uscita audio disponibile; lampeggerà solo la lampada.",
+            "Omessi (senza codice Morse):",
+            "Omessi (non riconosciuti):",
         ],
         Lang::Pt => [
             "Tradutor de código Morse",
@@ -332,6 +374,12 @@ pub fn tr(lang: Lang, msg: Msg) -> &'static str {
             "câmbio, para uma estação específica",
             "aguarde",
             "início da transmissão",
+            "Parar",
+            "Tom:",
+            "Volume:",
+            "Sem saída de som disponível; só a lâmpada vai piscar.",
+            "Omitidos (sem código Morse):",
+            "Omitidos (não reconhecidos):",
         ],
         Lang::Ru => [
             "Переводчик азбуки Морзе",
@@ -360,6 +408,12 @@ pub fn tr(lang: Lang, msg: Msg) -> &'static str {
             "приём, конкретной станции",
             "ждите",
             "начало передачи",
+            "Стоп",
+            "Тон:",
+            "Громкость:",
+            "Звуковой выход недоступен; будет мигать только лампа.",
+            "Пропущено (нет кода Морзе):",
+            "Пропущено (не распознано):",
         ],
         Lang::Uk => [
             "Перекладач азбуки Морзе",
@@ -388,6 +442,12 @@ pub fn tr(lang: Lang, msg: Msg) -> &'static str {
             "прийом, конкретній станції",
             "чекайте",
             "початок передавання",
+            "Стоп",
+            "Тон:",
+            "Гучність:",
+            "Звуковий вихід недоступний; блиматиме лише лампа.",
+            "Пропущено (немає коду Морзе):",
+            "Пропущено (не розпізнано):",
         ],
         Lang::El => [
             "Μεταφραστής κώδικα Μορς",
@@ -416,6 +476,12 @@ pub fn tr(lang: Lang, msg: Msg) -> &'static str {
             "σειρά σας, συγκεκριμένος σταθμός",
             "αναμονή",
             "έναρξη μετάδοσης",
+            "Διακοπή",
+            "Τόνος:",
+            "Ένταση:",
+            "Δεν υπάρχει διαθέσιμη έξοδος ήχου· θα αναβοσβήνει μόνο η λυχνία.",
+            "Παραλείφθηκαν (χωρίς κώδικα Μορς):",
+            "Παραλείφθηκαν (μη αναγνωρισμένα):",
         ],
         Lang::Ja => [
             "モールス信号翻訳",
@@ -444,6 +510,12 @@ pub fn tr(lang: Lang, msg: Msg) -> &'static str {
             "指定局へどうぞ",
             "待て",
             "送信開始",
+            "停止",
+            "音の高さ：",
+            "音量：",
+            "音声出力を利用できません。ランプのみ点滅します。",
+            "省略（モールス符号なし）：",
+            "省略（認識できない符号）：",
         ],
         Lang::Ko => [
             "모스 부호 번역기",
@@ -472,6 +544,12 @@ pub fn tr(lang: Lang, msg: Msg) -> &'static str {
             "지정 국에 송신 넘김",
             "대기",
             "송신 시작",
+            "정지",
+            "음 높이:",
+            "음량:",
+            "소리 출력을 사용할 수 없습니다. 램프만 깜박입니다.",
+            "제외됨(모스 부호 없음):",
+            "제외됨(인식할 수 없음):",
         ],
         Lang::Zh => [
             "摩尔斯电码翻译器",
@@ -500,6 +578,12 @@ pub fn tr(lang: Lang, msg: Msg) -> &'static str {
             "请指定电台发送",
             "请等待",
             "开始发送",
+            "停止",
+            "音调：",
+            "音量：",
+            "没有可用的声音输出，仅闪烁指示灯。",
+            "已省略（无摩尔斯电码）：",
+            "已省略（无法识别）：",
         ],
     };
     row[Msg::ALL
@@ -527,6 +611,23 @@ mod tests {
         // the literal token so it matches the button label.
         for lang in Lang::ALL {
             assert!(tr(lang, Msg::Tip).contains("<AR>"), "{lang:?}");
+        }
+    }
+
+    #[test]
+    fn labels_that_introduce_a_value_end_with_a_colon() {
+        // The status line puts the list of what was left out straight
+        // after its label, and the sliders sit straight after theirs.
+        for lang in Lang::ALL {
+            for msg in [
+                Msg::ToneLabel,
+                Msg::VolumeLabel,
+                Msg::LeftOutChars,
+                Msg::LeftOutCodes,
+            ] {
+                let text = tr(lang, msg);
+                assert!(text.ends_with([':', '：']), "{lang:?} {msg:?}: {text}");
+            }
         }
     }
 

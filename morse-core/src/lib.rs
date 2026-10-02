@@ -8,7 +8,12 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 mod alphabets;
+mod audio;
 pub use alphabets::{Alphabet, normalize_input};
+pub use audio::{
+    MAX_FREQUENCY_HZ, MAX_RENDER_SAMPLES, MAX_SAMPLE_RATE, MIN_FREQUENCY_HZ, MIN_SAMPLE_RATE,
+    RenderError, Tone, render_samples, render_schedule, write_wav,
+};
 
 /// One Morse "unit" in milliseconds. A dot is 1 unit, a dash is 3 units.
 pub const UNIT_MS: u64 = 100;
@@ -551,7 +556,8 @@ pub fn decode_lossy_report_in(morse: &str, alphabet: Alphabet) -> DecodeReport {
 /// letter — since a transmitter already inserts a fixed 1-unit pause after
 /// every dot/dash regardless of Signal boundaries; only one [`Signal::LetterGap`]
 /// separates the whole fused prosign from the next letter, not one per
-/// constituent letter.
+/// constituent letter. [`build_schedule`] lays the plan out in time, with
+/// those pauses in place.
 pub fn build_signal_plan(text: &str) -> Vec<Signal> {
     build_signal_plan_in(text, Alphabet::detect(text))
 }
@@ -588,6 +594,88 @@ fn push_symbol(plan: &mut Vec<Signal>, symbol: char) {
         '-' => plan.push(Signal::Dash),
         _ => {}
     }
+}
+
+/// What a [`ScheduleStep`] is: a tone, or one of the three silences that
+/// separate tones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepKind {
+    /// Key down: the tone and the lamp are on.
+    Tone,
+    /// Silence between two symbols of one letter (or of a fused prosign).
+    SymbolGap,
+    /// Silence between two letters.
+    LetterGap,
+    /// Silence between two words.
+    WordGap,
+}
+
+/// One step of a transmission as it is keyed: a tone or a silence, and how
+/// long it lasts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScheduleStep {
+    pub kind: StepKind,
+    pub duration_ms: u64,
+}
+
+impl ScheduleStep {
+    pub fn is_tone(&self) -> bool {
+        self.kind == StepKind::Tone
+    }
+}
+
+/// Lay a signal plan out in time: every tone and every silence of the
+/// transmission, in order, each with its full duration under `timing`.
+///
+/// This is the one place the unit of silence after a symbol is added: a
+/// [`Signal`]'s own duration leaves it out, so a transmitter that plays a
+/// plan signal by signal would have to add it itself. In the schedule a
+/// single silence separates each tone from the next, 1 character unit
+/// inside a letter and 3 or 7 spacing units between letters or words, and
+/// nothing follows a tone that ends the plan. A plan built by hand may
+/// start or end with gaps; those are kept as silences of their own.
+pub fn build_schedule(plan: &[Signal], timing: Timing) -> Vec<ScheduleStep> {
+    let mut schedule: Vec<ScheduleStep> = Vec::with_capacity(plan.len() * 2);
+    for (i, signal) in plan.iter().enumerate() {
+        let duration_ms = signal.duration_ms_timed(timing);
+        if signal.is_tone() {
+            schedule.push(ScheduleStep {
+                kind: StepKind::Tone,
+                duration_ms,
+            });
+            if i + 1 < plan.len() {
+                schedule.push(ScheduleStep {
+                    kind: StepKind::SymbolGap,
+                    duration_ms: timing.char_unit_ms,
+                });
+            }
+            continue;
+        }
+        let kind = match signal {
+            Signal::WordGap => StepKind::WordGap,
+            _ => StepKind::LetterGap,
+        };
+        // A gap signal widens the silence already running, if there is
+        // one: the unit after a symbol, or an earlier gap.
+        match schedule.last_mut() {
+            Some(silence) if !silence.is_tone() => {
+                silence.duration_ms = silence.duration_ms.saturating_add(duration_ms);
+                if silence.kind != StepKind::WordGap {
+                    silence.kind = kind;
+                }
+            }
+            _ => schedule.push(ScheduleStep { kind, duration_ms }),
+        }
+    }
+    schedule
+}
+
+/// Total length of a schedule in milliseconds, saturating rather than
+/// overflowing.
+pub fn schedule_duration_ms(schedule: &[ScheduleStep]) -> u64 {
+    schedule
+        .iter()
+        .fold(0, |total, step| total.saturating_add(step.duration_ms))
 }
 
 #[cfg(test)]
@@ -823,6 +911,132 @@ mod tests {
         ] {
             assert_eq!(signal.duration_ms_timed(timing), signal.duration_ms(100));
         }
+    }
+
+    /// Shorthand for a schedule step.
+    fn step(kind: StepKind, duration_ms: u64) -> ScheduleStep {
+        ScheduleStep { kind, duration_ms }
+    }
+
+    #[test]
+    fn schedule_separates_tones_by_exactly_one_silence() {
+        let timing = Timing::uniform(60);
+        // A is dot dash: one character unit of silence between them.
+        assert_eq!(
+            build_schedule(&build_signal_plan("A"), timing),
+            vec![
+                step(StepKind::Tone, 60),
+                step(StepKind::SymbolGap, 60),
+                step(StepKind::Tone, 180),
+            ]
+        );
+        // Letters are 3 units apart and words 7, each as a single silence.
+        assert_eq!(
+            build_schedule(&build_signal_plan("EE E"), timing),
+            vec![
+                step(StepKind::Tone, 60),
+                step(StepKind::LetterGap, 180),
+                step(StepKind::Tone, 60),
+                step(StepKind::WordGap, 420),
+                step(StepKind::Tone, 60),
+            ]
+        );
+        for text in ["SOS", "CQ CQ <AR>", "한글", "PARIS PARIS"] {
+            let schedule = build_schedule(&build_signal_plan(text), timing);
+            assert!(schedule.len() % 2 == 1, "{text:?}");
+            for (i, step) in schedule.iter().enumerate() {
+                assert_eq!(step.is_tone(), i % 2 == 0, "{text:?}: step {i}");
+            }
+        }
+        assert_eq!(build_schedule(&[], timing), vec![]);
+    }
+
+    #[test]
+    fn schedule_stretches_only_letter_and_word_gaps_under_farnsworth() {
+        let timing = Timing::farnsworth_wpm(20.0, 5.0);
+        assert_eq!(
+            build_schedule(&build_signal_plan("AE E"), timing),
+            vec![
+                step(StepKind::Tone, 60),
+                step(StepKind::SymbolGap, 60),
+                step(StepKind::Tone, 180),
+                step(StepKind::LetterGap, 3 * 534),
+                step(StepKind::Tone, 60),
+                step(StepKind::WordGap, 7 * 534),
+                step(StepKind::Tone, 60),
+            ]
+        );
+    }
+
+    /// How long `text` takes from its first tone to the first tone of a
+    /// word sent after it: the text plus one word gap.
+    fn word_period_ms(text: &str, timing: Timing) -> u64 {
+        let schedule = build_schedule(&build_signal_plan(&format!("{text} E")), timing);
+        let (last_tone, rest) = schedule.split_last().expect("a schedule");
+        assert!(last_tone.is_tone());
+        schedule_duration_ms(rest)
+    }
+
+    #[test]
+    fn schedule_for_paris_lasts_one_word_period() {
+        // PARIS and its word gap are 50 units: 60s / 20 WPM = 3000 ms.
+        assert_eq!(word_period_ms("PARIS", Timing::uniform(60)), 3000);
+        assert_eq!(
+            word_period_ms("PARIS", Timing::uniform(wpm_to_unit_ms(20.0))),
+            3000
+        );
+        // At 20/5 Farnsworth the same word lasts 60s / 5 WPM = 12s, less
+        // the rounding of the spacing unit over its 19 spacing units.
+        let farnsworth = word_period_ms("PARIS", Timing::farnsworth_wpm(20.0, 5.0));
+        assert_eq!(farnsworth, 31 * 60 + 19 * 534);
+        assert!(farnsworth.abs_diff(12_000) <= 19, "{farnsworth}ms");
+        // Without a following word, the schedule stops at the last tone:
+        // 43 units.
+        let alone = build_schedule(&build_signal_plan("PARIS"), Timing::uniform(60));
+        assert_eq!(schedule_duration_ms(&alone), 43 * 60);
+        assert!(alone.last().is_some_and(ScheduleStep::is_tone));
+    }
+
+    #[test]
+    fn schedule_keeps_the_gaps_of_a_hand_built_plan() {
+        let timing = Timing::uniform(10);
+        // Leading and trailing gaps are silences of their own; the unit
+        // after a tone is only added when something follows the tone.
+        assert_eq!(
+            build_schedule(
+                &[
+                    Signal::LetterGap,
+                    Signal::Dot,
+                    Signal::WordGap,
+                    Signal::Dash,
+                    Signal::LetterGap,
+                ],
+                timing
+            ),
+            vec![
+                step(StepKind::LetterGap, 20),
+                step(StepKind::Tone, 10),
+                step(StepKind::WordGap, 50),
+                step(StepKind::Tone, 30),
+                step(StepKind::LetterGap, 30),
+            ]
+        );
+        // A word gap stays a word gap whatever is merged into it.
+        assert_eq!(
+            build_schedule(
+                &[Signal::Dot, Signal::WordGap, Signal::LetterGap, Signal::Dot],
+                timing
+            )[1],
+            step(StepKind::WordGap, 70)
+        );
+    }
+
+    #[test]
+    fn schedule_does_not_overflow_on_a_huge_raw_unit_length() {
+        let schedule = build_schedule(&build_signal_plan("EE E"), Timing::uniform(u64::MAX));
+        assert_eq!(schedule.len(), 5);
+        assert!(schedule.iter().all(|step| step.duration_ms == u64::MAX));
+        assert_eq!(schedule_duration_ms(&schedule), u64::MAX);
     }
 
     #[test]

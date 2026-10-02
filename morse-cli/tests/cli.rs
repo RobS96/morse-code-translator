@@ -1,8 +1,9 @@
 //! End-to-end tests of the `morse` binary: exit codes, which stream each
 //! kind of output goes to, piped input, and behaviour on a closed pipe.
 
+use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 const BIN: &str = env!("CARGO_BIN_EXE_morse");
@@ -59,6 +60,326 @@ fn assert_exit(output: &Output, code: i32) {
     let err = stderr(output);
     assert!(!err.contains("panicked"), "panicked:\n{err}");
     assert_eq!(output.status.code(), Some(code), "stderr:\n{err}");
+}
+
+/// A directory of its own for one test's files, removed when dropped.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(test: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("morse-cli-{test}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create scratch directory");
+        Scratch(dir)
+    }
+
+    /// The path of `name` inside the directory, as an argument for `morse`.
+    fn path(&self, name: &str) -> String {
+        self.0
+            .join(name)
+            .to_str()
+            .expect("scratch path is UTF-8")
+            .to_string()
+    }
+
+    /// The names of the files in the directory, sorted.
+    fn files(&self) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(&self.0)
+            .expect("list scratch directory")
+            .map(|entry| entry.expect("directory entry").file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// What a WAV file says about itself, and its samples.
+struct Wav {
+    channels: u16,
+    sample_rate: u32,
+    bits_per_sample: u16,
+    samples: Vec<i16>,
+}
+
+impl Wav {
+    fn peak(&self) -> u16 {
+        self.samples
+            .iter()
+            .map(|s| s.unsigned_abs())
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+/// Read a 16-bit PCM WAV file, checking every header field that has only
+/// one right value.
+#[track_caller]
+fn read_wav(path: &str) -> Wav {
+    let bytes = fs::read(path).expect("read WAV file");
+    assert!(bytes.len() >= 44, "{} bytes is no WAV file", bytes.len());
+    let u16_at = |at: usize| u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+    let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"));
+    assert_eq!(&bytes[0..4], b"RIFF");
+    assert_eq!(u32_at(4) as usize, bytes.len() - 8, "RIFF chunk size");
+    assert_eq!(&bytes[8..16], b"WAVEfmt ");
+    assert_eq!(u32_at(16), 16, "fmt chunk size");
+    assert_eq!(u16_at(20), 1, "format: integer PCM");
+    assert_eq!(&bytes[36..40], b"data");
+    assert_eq!(u32_at(40) as usize, bytes.len() - 44, "data chunk size");
+    let wav = Wav {
+        channels: u16_at(22),
+        sample_rate: u32_at(24),
+        bits_per_sample: u16_at(34),
+        samples: bytes[44..]
+            .chunks(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+            .collect(),
+    };
+    let frame_bytes = u32::from(wav.channels) * u32::from(wav.bits_per_sample) / 8;
+    assert_eq!(u32_at(28), wav.sample_rate * frame_bytes, "byte rate");
+    assert_eq!(u32::from(u16_at(32)), frame_bytes, "block align");
+    assert_eq!(2 * wav.samples.len(), bytes.len() - 44);
+    wav
+}
+
+#[test]
+fn wav_writes_a_valid_file_of_the_expected_duration() {
+    let scratch = Scratch::new("wav-duration");
+    let file = scratch.path("paris.wav");
+    let output = morse(&["wav", "PARIS", "-o", &file, "--wpm", "20"]);
+    assert_exit(&output, 0);
+    assert_eq!(stderr(&output), "");
+    assert_eq!(
+        stdout(&output),
+        format!("Wrote {file} (2.58 s, 44100 Hz, 16-bit mono)\n")
+    );
+    let wav = read_wav(&file);
+    assert_eq!(
+        (wav.channels, wav.sample_rate, wav.bits_per_sample),
+        (1, 44_100, 16)
+    );
+    // PARIS is 43 units of 60 ms from its first tone to its last.
+    assert_eq!(wav.samples.len(), 43 * 60 * 44_100 / 1000);
+    // The default tone peaks at a fifth of full scale, and every tone
+    // starts and ends in silence.
+    assert!((6_400..=6_554).contains(&wav.peak()), "peak {}", wav.peak());
+    assert_eq!(wav.samples.first(), Some(&0));
+    assert_eq!(wav.samples.last(), Some(&0));
+    // Nothing else is left behind.
+    assert_eq!(scratch.files(), vec!["paris.wav"]);
+
+    // Farnsworth: two dots 7 spacing units of 534 ms apart.
+    let file = scratch.path("farnsworth.wav");
+    let output = morse(&["wav", "E E", "--wpm=20", "--farnsworth-wpm=5", "-o", &file]);
+    assert_exit(&output, 0);
+    let wav = read_wav(&file);
+    let ms = 60 + 7 * 534 + 60;
+    assert_eq!(wav.samples.len(), (ms * 44_100 + 500) / 1000);
+    // Raw unit lengths, as transmit takes them.
+    let file = scratch.path("raw.wav");
+    let output = morse(&["wav", "-u", "10", "-g", "20", "--output", &file, "E E"]);
+    assert_exit(&output, 0);
+    assert_eq!(read_wav(&file).samples.len(), (10 + 140 + 10) * 441 / 10);
+}
+
+#[test]
+fn wav_tone_and_volume_shape_the_audio() {
+    let scratch = Scratch::new("wav-tone");
+    let loud = scratch.path("loud.wav");
+    let output = morse(&["wav", "T", "-o", &loud, "--volume", "1", "--tone", "1000"]);
+    assert_exit(&output, 0);
+    let wav = read_wav(&loud);
+    assert!(wav.peak() >= 32_700, "peak {}", wav.peak());
+    // 1 kHz crosses zero 2000 times a second; the dash lasts 0.3 s.
+    let crossings = wav
+        .samples
+        .windows(2)
+        .filter(|pair| (pair[0] < 0) != (pair[1] < 0))
+        .count();
+    assert!((595..=605).contains(&crossings), "{crossings} crossings");
+
+    let silent = scratch.path("silent.wav");
+    let output = morse(&["wav", "T", "-o", &silent, "--volume=0"]);
+    assert_exit(&output, 0);
+    let wav = read_wav(&silent);
+    assert_eq!(wav.samples.len(), 300 * 441 / 10);
+    assert_eq!(wav.peak(), 0);
+}
+
+#[test]
+fn wav_refuses_to_overwrite_an_existing_file_unless_forced() {
+    let scratch = Scratch::new("wav-overwrite");
+    let file = scratch.path("kept.wav");
+    fs::write(&file, b"not to be lost").expect("write existing file");
+
+    let output = morse(&["wav", "SOS", "-o", &file, "-u", "10"]);
+    assert_exit(&output, 3);
+    assert_eq!(stdout(&output), "");
+    let err = stderr(&output);
+    assert!(
+        err.contains("already exists") && err.contains("--force"),
+        "{err}"
+    );
+    assert!(!err.contains("Usage:"), "{err}");
+    assert_eq!(fs::read(&file).expect("read file"), b"not to be lost");
+    assert_eq!(scratch.files(), vec!["kept.wav"]);
+
+    // The refusal comes before standard input is read.
+    let output = morse_with_stdin(&["wav", "-o", &file], b"SOS\n");
+    assert_exit(&output, 3);
+    assert_eq!(fs::read(&file).expect("read file"), b"not to be lost");
+
+    let output = morse(&["wav", "SOS", "-o", &file, "-u", "10", "--force"]);
+    assert_exit(&output, 0);
+    assert_eq!(stderr(&output), "");
+    assert_eq!(read_wav(&file).samples.len(), 27 * 441);
+    assert_eq!(scratch.files(), vec!["kept.wav"]);
+}
+
+#[test]
+fn wav_that_cannot_be_written_leaves_nothing_behind() {
+    let scratch = Scratch::new("wav-unwritable");
+    let file = scratch.path("no-such-directory/sos.wav");
+    let output = morse(&["wav", "SOS", "-o", &file, "-u", "10"]);
+    assert_exit(&output, 3);
+    assert_eq!(stdout(&output), "");
+    let err = stderr(&output);
+    assert!(err.contains("sos.wav"), "{err}");
+    assert!(!err.contains("Usage:"), "{err}");
+    assert_eq!(scratch.files(), Vec::<String>::new());
+
+    // A directory in the way is not replaced, forced or not.
+    let directory = scratch.path("taken");
+    fs::create_dir(&directory).expect("create directory");
+    for force in [&[][..], &["--force"][..]] {
+        let mut args = vec!["wav", "SOS", "-o", &directory, "-u", "10"];
+        args.extend(force);
+        let output = morse(&args);
+        assert_exit(&output, 3);
+        assert_eq!(scratch.files(), vec!["taken"], "{force:?}");
+        assert!(Path::new(&directory).is_dir());
+    }
+
+    // More audio than one rendering may hold: nothing is written.
+    let file = scratch.path("long.wav");
+    let output = morse(&["wav", "PARIS PARIS", "-o", &file, "-u", "60000"]);
+    assert_exit(&output, 3);
+    assert!(stderr(&output).contains("too long"), "{}", stderr(&output));
+    assert_eq!(scratch.files(), vec!["taken"]);
+}
+
+#[test]
+fn wav_warns_about_dropped_characters_and_strict_exits_two() {
+    let scratch = Scratch::new("wav-strict");
+    let file = scratch.path("ab.wav");
+    let output = morse(&["wav", "A~B", "-o", &file, "-u", "10"]);
+    assert_exit(&output, 0);
+    assert_eq!(
+        stderr(&output),
+        "morse: warning: left out 1 character with no Morse code: '~' (U+007E)\n"
+    );
+    let lossy = read_wav(&file).samples;
+
+    // Like encode: the file is still written, and the exit code says
+    // that something was left out.
+    let strict = scratch.path("strict.wav");
+    let output = morse(&["wav", "A~B", "-o", &strict, "-u", "10", "--strict"]);
+    assert_exit(&output, 2);
+    assert!(stderr(&output).contains("'~' (U+007E)"));
+    assert!(!stderr(&output).contains("Usage:"));
+    assert!(stdout(&output).starts_with("Wrote "));
+    assert_eq!(read_wav(&strict).samples, lossy);
+
+    let clean = scratch.path("clean.wav");
+    let output = morse(&["wav", "AB", "-o", &clean, "-u", "10", "--strict"]);
+    assert_exit(&output, 0);
+    assert_eq!(stderr(&output), "");
+    assert_eq!(read_wav(&clean).samples, lossy);
+}
+
+#[test]
+fn wav_reads_its_text_from_stdin_like_the_other_commands() {
+    let scratch = Scratch::new("wav-stdin");
+    let file = scratch.path("sos.wav");
+    let output = morse_with_stdin(&["wav", "-o", &file, "-u", "10"], b"SOS\n");
+    assert_exit(&output, 0);
+    assert_eq!(read_wav(&file).samples.len(), 27 * 441);
+
+    let missing = scratch.path("missing.wav");
+    let output = morse(&["wav", "-o", &missing]);
+    assert_exit(&output, 1);
+    assert!(stderr(&output).contains("missing text"));
+    assert_eq!(scratch.files(), vec!["sos.wav"]);
+}
+
+#[test]
+fn wav_options_are_validated_before_anything_is_written() {
+    let scratch = Scratch::new("wav-usage");
+    let file = scratch.path("never.wav");
+    for (args, message) in [
+        (&["--tone", "high"][..], "--tone"),
+        (&["--tone", "0"][..], "--tone"),
+        (&["--tone", "-600"][..], "--tone"),
+        (&["--tone", "nan"][..], "--tone"),
+        (&["--tone", "inf"][..], "--tone"),
+        (&["--tone", "19"][..], "between 20 and 20000"),
+        (&["--tone=20001"][..], "between 20 and 20000"),
+        (&["--volume", "loud"][..], "--volume"),
+        (&["--volume", "1.5"][..], "between 0 and 1"),
+        (&["--volume", "-0.5"][..], "--volume"),
+        (&["--volume", "nan"][..], "--volume"),
+        (&["--volume"][..], "--volume expects a value"),
+        // The timing options are checked exactly as for transmit.
+        (&["--wpm", "fast"][..], "--wpm"),
+        (&["--wpm", "20", "-u", "60"][..], "-u"),
+        (&["-u", "100", "-g", "50"][..], "-g"),
+        (
+            &["--wpm", "10", "--farnsworth-wpm", "20"][..],
+            "--farnsworth-wpm",
+        ),
+        (&["-a", "klingon"][..], "unknown alphabet"),
+    ] {
+        let mut line = vec!["wav", "SOS", "-o", &file];
+        line.extend(args);
+        let output = morse(&line);
+        assert_exit(&output, 1);
+        assert_eq!(stdout(&output), "", "{args:?}");
+        let err = stderr(&output);
+        assert!(err.contains(message), "{args:?}: {err}");
+        assert!(err.contains("Usage:"), "{args:?}: {err}");
+    }
+    // The output file is required, and "-" does not mean standard output.
+    for (line, message) in [
+        (&["wav", "SOS"][..], "-o"),
+        (&["wav", "SOS", "-o"][..], "-o expects a value"),
+        (&["wav", "SOS", "-o", "-"][..], "standard output"),
+        (&["wav", "SOS", "--output=-"][..], "standard output"),
+    ] {
+        let output = morse(line);
+        assert_exit(&output, 1);
+        assert_eq!(stdout(&output), "", "{line:?}");
+        assert!(stderr(&output).contains(message), "{line:?}");
+    }
+    // Options that only wav has are not silently ignored elsewhere.
+    for line in [
+        &["encode", "SOS", "-o", &file][..],
+        &["transmit", "E", "-u", "1", "--output", &file][..],
+        &["encode", "SOS", "--force"][..],
+        &["decode", "...", "--force"][..],
+    ] {
+        let output = morse(line);
+        assert_exit(&output, 1);
+        assert_eq!(stdout(&output), "", "{line:?}");
+        assert!(stderr(&output).contains("wav only"), "{line:?}");
+    }
+    assert_eq!(scratch.files(), Vec::<String>::new());
 }
 
 #[test]

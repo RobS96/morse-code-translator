@@ -2,15 +2,17 @@
 
 use std::env;
 use std::ffi::OsString;
-use std::io::{self, IsTerminal, Read, Write};
-use std::path::Path;
-use std::process::ExitCode;
+use std::fs::{self, OpenOptions};
+use std::io::{self, BufWriter, IsTerminal, Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{self, ExitCode};
 use std::thread::sleep;
 use std::time::Duration;
 
 use morse_core::{
-    Alphabet, MAX_UNIT_MS, MIN_UNIT_MS, Signal, Timing, UNIT_MS, build_signal_plan_in,
-    decode_lossy_report_in, encode_lossy_report_in, wpm_to_unit_ms,
+    Alphabet, MAX_FREQUENCY_HZ, MAX_UNIT_MS, MIN_FREQUENCY_HZ, MIN_UNIT_MS, StepKind, Timing, Tone,
+    UNIT_MS, build_schedule, build_signal_plan_in, decode_lossy_report_in, encode_lossy_report_in,
+    render_samples, wpm_to_unit_ms, write_wav,
 };
 
 /// Exit code for a command line that could not be understood.
@@ -29,23 +31,30 @@ const MAX_WPM: f64 = 100.0;
 const LISTED_CODES: usize = 10;
 
 fn usage(prog: &str) -> String {
+    let Tone {
+        frequency_hz,
+        sample_rate,
+        volume,
+        ..
+    } = Tone::default();
     format!(
         "Morse Code Translator\n\n\
          Usage:\n  \
          {prog} encode [text]            Text -> Morse (supports <SK>, <AR>, ... prosigns)\n  \
          {prog} decode [morse]           Morse -> text (use / between words)\n  \
          {prog} transmit [text] [opts]   Flash + beep the Morse in your terminal\n  \
+         {prog} wav [text] -o <FILE>     Write the Morse as audio to a WAV file\n  \
          {prog} alphabets                List the supported Morse alphabets\n\n\
          Options may come before or after the text. With no text argument, the\n\
          text is read from standard input, unless that is a terminal.\n\n\
-         Options (encode/decode/transmit):\n  \
+         Options (encode/decode/transmit/wav):\n  \
          -a, --alphabet <NAME>       latin, cyrillic, greek, hebrew, arabic, persian,\n  \
-         {pad:28}japanese (Wabun) or korean. Encode/transmit\n  \
-         {pad:28}detect it from the text when omitted; decode\n  \
-         {pad:28}defaults to latin (Morse can't be detected).\n\n\
-         Options (encode/decode):\n  \
+         {pad:28}japanese (Wabun) or korean. Detected from the\n  \
+         {pad:28}text when omitted; decode defaults to latin\n  \
+         {pad:28}(Morse can't be detected).\n\n\
+         Options (encode/decode/wav):\n  \
          --strict                    Exit with code {EXIT_LOSSY} if anything was left out\n\n\
-         Transmit options:\n  \
+         Timing options (transmit/wav):\n  \
          -u, --unit-ms <MS>          Character unit length in ms (default {UNIT_MS})\n  \
          -g, --gap-unit-ms <MS>      Letter/word gap unit length in ms (default: the\n  \
          {pad:28}character unit; must not be shorter than it)\n  \
@@ -54,6 +63,13 @@ fn usage(prog: &str) -> String {
          --farnsworth-wpm <N>        Set effective overall speed (Farnsworth timing),\n  \
          {pad:28}instead of -g; must not exceed the character\n  \
          {pad:28}speed\n\n\
+         WAV options:\n  \
+         -o, --output <FILE>         The file to write, as 16-bit mono PCM at {sample_rate} Hz\n  \
+         {pad:28}(required). An existing file is not replaced\n  \
+         --force                     Replace <FILE> if it already exists\n  \
+         --tone <HZ>                 Tone frequency in Hz, {MIN_FREQUENCY_HZ} to {MAX_FREQUENCY_HZ} \
+         (default {frequency_hz})\n  \
+         --volume <LEVEL>            Peak level, 0 to 1 (default {volume})\n\n\
          Other options:\n  \
          -h, --help                  Show this help\n  \
          -V, --version               Show the version\n\n\
@@ -63,7 +79,8 @@ fn usage(prog: &str) -> String {
          0  success\n  \
          {EXIT_USAGE}  the command line could not be understood\n  \
          {EXIT_LOSSY}  --strict was given and something was left out\n  \
-         {EXIT_IO}  standard input could not be read, or the output written\n\n\
+         {EXIT_IO}  standard input could not be read, or the output or the WAV file\n     \
+         could not be written\n\n\
          Examples:\n  \
          {prog} encode \"SOS\"\n  \
          {prog} encode \"CQ CQ <AR>\"\n  \
@@ -72,7 +89,8 @@ fn usage(prog: &str) -> String {
          {prog} decode \".--. .-. .. .-- . -\" --alphabet cyrillic\n  \
          echo \"SOS\" | {prog} encode --strict\n  \
          {prog} transmit \"HELLO WORLD\" --wpm 20\n  \
-         {prog} transmit --wpm 20 --farnsworth-wpm 5 \"HELLO WORLD\"\n",
+         {prog} transmit --wpm 20 --farnsworth-wpm 5 \"HELLO WORLD\"\n  \
+         {prog} wav \"PARIS PARIS\" -o paris.wav --wpm 20 --tone 700\n",
         pad = ""
     )
 }
@@ -84,6 +102,9 @@ const VALUE_FLAGS: &[(&str, &[&str])] = &[
     ("--gap-unit-ms", &["-g", "--gap-unit-ms"]),
     ("--wpm", &["--wpm"]),
     ("--farnsworth-wpm", &["--farnsworth-wpm"]),
+    ("--output", &["-o", "--output"]),
+    ("--tone", &["--tone"]),
+    ("--volume", &["--volume"]),
 ];
 
 fn value_flag(arg: &str) -> Option<&'static str> {
@@ -94,7 +115,11 @@ fn value_flag(arg: &str) -> Option<&'static str> {
 }
 
 fn is_option(arg: &str) -> bool {
-    value_flag(arg).is_some() || matches!(arg, "-h" | "--help" | "-V" | "--version" | "--strict")
+    value_flag(arg).is_some()
+        || matches!(
+            arg,
+            "-h" | "--help" | "-V" | "--version" | "--strict" | "--force"
+        )
 }
 
 /// What the command line asked for.
@@ -111,9 +136,10 @@ enum Command {
     Encode,
     Decode,
     Transmit,
+    Wav,
 }
 
-/// A parsed `encode`/`decode`/`transmit` command line. Option values are
+/// A parsed `encode`/`decode`/`transmit`/`wav` command line. Option values are
 /// kept as written, paired with the spelling used, for error messages.
 /// `text` is `None` when no text argument was given.
 #[derive(Debug, PartialEq)]
@@ -121,11 +147,15 @@ struct Request {
     command: Command,
     text: Option<String>,
     strict: bool,
+    force: bool,
     alphabet: Option<(String, String)>,
     unit_ms: Option<(String, String)>,
     gap_unit_ms: Option<(String, String)>,
     wpm: Option<(String, String)>,
     farnsworth_wpm: Option<(String, String)>,
+    output: Option<(String, String)>,
+    tone: Option<(String, String)>,
+    volume: Option<(String, String)>,
 }
 
 /// Parse the arguments after the program name.
@@ -142,6 +172,7 @@ fn parse_args(args: &[String]) -> Result<Invocation, String> {
     let mut values: Vec<(&'static str, String, String)> = Vec::new();
     let mut version = false;
     let mut strict = false;
+    let mut force = false;
 
     let mut it = args.iter().map(String::as_str);
     while let Some(arg) = it.next() {
@@ -152,6 +183,8 @@ fn parse_args(args: &[String]) -> Result<Invocation, String> {
             version = true;
         } else if arg == "--strict" {
             strict = true;
+        } else if arg == "--force" {
+            force = true;
         } else if let Some(name) = value_flag(arg) {
             match it.next() {
                 Some(value) if !is_option(value) => {
@@ -181,6 +214,7 @@ fn parse_args(args: &[String]) -> Result<Invocation, String> {
         Some("encode") => Command::Encode,
         Some("decode") => Command::Decode,
         Some("transmit") => Command::Transmit,
+        Some("wav") => Command::Wav,
         Some("alphabets") => {
             return match positionals.next() {
                 None => Ok(Invocation::Alphabets),
@@ -196,7 +230,7 @@ fn parse_args(args: &[String]) -> Result<Invocation, String> {
         ));
     }
     if strict && command == Command::Transmit {
-        return Err("--strict applies to encode and decode only".to_string());
+        return Err("--strict applies to encode, decode and wav only".to_string());
     }
 
     let value = |name: &str| {
@@ -206,15 +240,29 @@ fn parse_args(args: &[String]) -> Result<Invocation, String> {
             .find(|(n, _, _)| *n == name)
             .map(|(_, spelling, value)| (spelling.clone(), value.clone()))
     };
+    // Unlike a stray timing option, these would leave the user believing
+    // a file had been written, or one protected.
+    if command != Command::Wav {
+        if let Some((flag, _)) = value("--output") {
+            return Err(format!("{flag} applies to wav only"));
+        }
+        if force {
+            return Err("--force applies to wav only".to_string());
+        }
+    }
     Ok(Invocation::Run(Box::new(Request {
         command,
         text: text.map(str::to_string),
         strict,
+        force,
         alphabet: value("--alphabet"),
         unit_ms: value("--unit-ms"),
         gap_unit_ms: value("--gap-unit-ms"),
         wpm: value("--wpm"),
         farnsworth_wpm: value("--farnsworth-wpm"),
+        output: value("--output"),
+        tone: value("--tone"),
+        volume: value("--volume"),
     })))
 }
 
@@ -247,7 +295,7 @@ fn parse_unit_ms((flag, v): &(String, String)) -> Result<u64, String> {
     Ok(ms)
 }
 
-/// Resolve transmit timing: the character unit from `--wpm` or `-u`, the
+/// Resolve `transmit`/`wav` timing: the character unit from `--wpm` or `-u`, the
 /// gap unit from `--farnsworth-wpm` or `-g`, and standard
 /// (non-Farnsworth) timing at [`UNIT_MS`] for whatever is not given.
 ///
@@ -310,6 +358,79 @@ fn resolve_timing(request: &Request) -> Result<Timing, String> {
         char_unit_ms,
         gap_unit_ms,
     })
+}
+
+/// Validate `--tone`: a frequency from [`MIN_FREQUENCY_HZ`] to
+/// [`MAX_FREQUENCY_HZ`].
+fn parse_tone((flag, v): &(String, String)) -> Result<f32, String> {
+    let hz: f32 = v
+        .parse()
+        .map_err(|_| format!("{flag} expects a frequency in Hz, got {v:?}"))?;
+    // A NaN is in no range, so this rejects "nan" as well.
+    if !(MIN_FREQUENCY_HZ..=MAX_FREQUENCY_HZ).contains(&hz) {
+        return Err(format!(
+            "{flag} must be between {MIN_FREQUENCY_HZ} and {MAX_FREQUENCY_HZ} Hz, got {v:?}"
+        ));
+    }
+    Ok(hz)
+}
+
+/// Validate `--volume`: a peak level from 0 (silent) to 1 (full scale).
+fn parse_volume((flag, v): &(String, String)) -> Result<f32, String> {
+    let volume: f32 = v
+        .parse()
+        .map_err(|_| format!("{flag} expects a number, got {v:?}"))?;
+    if !(0.0..=1.0).contains(&volume) {
+        return Err(format!("{flag} must be between 0 and 1, got {v:?}"));
+    }
+    Ok(volume)
+}
+
+/// Where `wav` writes, and the tone it renders with.
+#[derive(Debug, PartialEq)]
+struct WavOutput {
+    path: PathBuf,
+    force: bool,
+    tone: Tone,
+}
+
+/// Resolve the `wav` options: the required `-o` file, `--force`, and the
+/// tone from `--tone` and `--volume` over [`Tone::default`]. `-o -` is a
+/// usage error rather than a file called `-` or audio on standard output.
+fn resolve_wav(request: &Request) -> Result<WavOutput, String> {
+    let Some((flag, path)) = &request.output else {
+        return Err("wav needs -o <FILE>, the file to write".to_string());
+    };
+    if path == "-" {
+        return Err(format!(
+            "{flag} expects a file path; writing to standard output is not supported"
+        ));
+    }
+    let path = PathBuf::from(path);
+    if path.file_name().is_none() {
+        return Err(format!("{flag} expects a file path, got {path:?}"));
+    }
+    let mut tone = Tone::default();
+    if let Some(hz) = request.tone.as_ref().map(parse_tone).transpose()? {
+        tone.frequency_hz = hz;
+    }
+    if let Some(volume) = request.volume.as_ref().map(parse_volume).transpose()? {
+        tone.volume = volume;
+    }
+    tone.validate().map_err(|err| err.to_string())?;
+    Ok(WavOutput {
+        path,
+        force: request.force,
+        tone,
+    })
+}
+
+/// A command with the options of its own resolved, ready for its text.
+enum Job {
+    Encode,
+    Decode,
+    Transmit(Timing),
+    Wav(Timing, WavOutput),
 }
 
 /// Resolve `-a`/`--alphabet`: `Ok(None)` when absent (caller picks the
@@ -443,6 +564,8 @@ enum Failure {
     Input(io::Error),
     /// Standard output could not be written.
     Output(io::Error),
+    /// The WAV file could not be produced; the message says why.
+    File(String),
 }
 
 impl From<io::Error> for Failure {
@@ -486,6 +609,10 @@ fn main() -> ExitCode {
             warn(&format!("morse: cannot read standard input: {err}"));
             ExitCode::from(EXIT_IO)
         }
+        Err(Failure::File(err)) => {
+            warn(&format!("morse: {err}"));
+            ExitCode::from(EXIT_IO)
+        }
     }
 }
 
@@ -520,17 +647,20 @@ fn run(
 
     let alphabet = resolve_alphabet(&request).map_err(Failure::Usage)?;
     // Checked before any text is read from standard input.
-    let timing = if request.command == Command::Transmit {
-        resolve_timing(&request).map_err(Failure::Usage)?
-    } else {
-        Timing::uniform(UNIT_MS)
+    let job = match request.command {
+        Command::Encode => Job::Encode,
+        Command::Decode => Job::Decode,
+        Command::Transmit => Job::Transmit(resolve_timing(&request).map_err(Failure::Usage)?),
+        Command::Wav => {
+            let timing = resolve_timing(&request).map_err(Failure::Usage)?;
+            let wav = resolve_wav(&request).map_err(Failure::Usage)?;
+            if !wav.force && exists(&wav.path) {
+                return Err(Failure::File(already_exists(&wav.path)));
+            }
+            Job::Wav(timing, wav)
+        }
     };
-    let Request {
-        command,
-        text,
-        strict,
-        ..
-    } = *request;
+    let Request { text, strict, .. } = *request;
     let text = match text {
         Some(text) => text,
         None => {
@@ -543,8 +673,8 @@ fn run(
     };
     let text_alphabet = || alphabet.unwrap_or_else(|| Alphabet::detect(&text));
 
-    match command {
-        Command::Encode => {
+    match job {
+        Job::Encode => {
             let report = encode_lossy_report_in(&text, text_alphabet());
             if let Some(warning) = dropped_warning(&report.skipped) {
                 warn(&warning);
@@ -554,7 +684,7 @@ fn run(
                 strict && !report.skipped.is_empty(),
             )
         }
-        Command::Decode => {
+        Job::Decode => {
             let alphabet = alphabet.unwrap_or(Alphabet::Latin);
             let report = decode_lossy_report_in(&text, alphabet);
             if let Some(warning) = unrecognised_warning(&report.skipped, alphabet) {
@@ -565,14 +695,16 @@ fn run(
                 strict && !report.skipped.is_empty(),
             )
         }
-        Command::Transmit => Ok(transmit(out, &text, timing, text_alphabet())?),
+        Job::Transmit(timing) => Ok(transmit(out, &text, timing, text_alphabet(), sleep)?),
+        Job::Wav(timing, wav) => write_wav_file(out, &text, timing, text_alphabet(), &wav, strict),
     }
 }
 
 /// Play a text message out as visual flashes + terminal-bell beeps, timed
-/// according to standard Morse ratios (dot=1u, dash=3u, gaps 1u/3u/7u for
-/// symbol/letter/word) — or, under Farnsworth `timing`, with letter/word
-/// gaps stretched independently of character speed.
+/// by the core schedule: standard Morse ratios (dot=1u, dash=3u, gaps
+/// 1u/3u/7u for symbol/letter/word) or, under Farnsworth `timing`, with
+/// letter/word gaps stretched independently of character speed. Each
+/// step of the schedule is waited out with `pause`.
 ///
 /// A failed write ends the transmission there: once stdout has been
 /// closed (e.g. piping into `head`) nobody is left to see the rest.
@@ -581,6 +713,7 @@ fn transmit(
     text: &str,
     timing: Timing,
     alphabet: Alphabet,
+    mut pause: impl FnMut(Duration),
 ) -> io::Result<()> {
     if timing.gap_unit_ms == timing.char_unit_ms {
         writeln!(
@@ -601,25 +734,116 @@ fn transmit(
     }
     writeln!(out, "{}", report.morse)?;
 
-    for signal in build_signal_plan_in(text, alphabet) {
-        if signal.is_tone() {
+    for step in build_schedule(&build_signal_plan_in(text, alphabet), timing) {
+        let duration = Duration::from_millis(step.duration_ms);
+        if step.is_tone() {
             // \x07 = terminal bell (audible beep in most terminal apps).
             // \x1b[7m..\x1b[0m briefly inverts the colors for a visual flash.
             write!(out, "\x07\x1b[7m  \x1b[0m")?;
             out.flush()?;
-            sleep(Duration::from_millis(signal.duration_ms_timed(timing)));
+            pause(duration);
             write!(out, "\r    \r")?;
             out.flush()?;
-            // 1-unit gap after every symbol, at character speed.
-            sleep(Duration::from_millis(timing.char_unit_ms));
         } else {
-            if matches!(signal, Signal::WordGap) {
+            if step.kind == StepKind::WordGap {
                 writeln!(out)?;
             }
-            sleep(Duration::from_millis(signal.duration_ms_timed(timing)));
+            pause(duration);
         }
     }
     writeln!(out)
+}
+
+/// True if something is at `path` already, a dangling symlink included.
+fn exists(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
+}
+
+fn already_exists(path: &Path) -> String {
+    format!(
+        "{} already exists; pass --force to replace it",
+        path.display()
+    )
+}
+
+/// Render `text` to the WAV file `wav` names and report it on `out`.
+/// Dropped characters are warned about, and count under `strict`, as for
+/// `encode`; the file is written either way.
+fn write_wav_file(
+    out: &mut impl Write,
+    text: &str,
+    timing: Timing,
+    alphabet: Alphabet,
+    wav: &WavOutput,
+    strict: bool,
+) -> Result<(), Failure> {
+    let report = encode_lossy_report_in(text, alphabet);
+    if let Some(warning) = dropped_warning(&report.skipped) {
+        warn(&warning);
+    }
+    let path = wav.path.display();
+    let rate = wav.tone.sample_rate;
+    let samples = render_samples(&build_signal_plan_in(text, alphabet), timing, &wav.tone)
+        .map_err(|err| Failure::File(format!("cannot write {path}: {err}")))?;
+    save_wav(&wav.path, wav.force, &samples, rate).map_err(Failure::File)?;
+    let seconds = samples.len() as f64 / f64::from(rate);
+    translated(
+        writeln!(out, "Wrote {path} ({seconds:.2} s, {rate} Hz, 16-bit mono)"),
+        strict && !report.skipped.is_empty(),
+    )
+}
+
+/// A temporary file that is removed when this goes out of scope, unless
+/// it has been renamed away by then.
+struct TempFile(PathBuf);
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// Write `samples` to `path` as a WAV file. They go to a temporary file
+/// in the same directory, which is moved into place once complete, so a
+/// failure leaves neither a partial file nor a damaged earlier one.
+/// Without `force`, a `path` that exists is an error and is left alone.
+fn save_wav(path: &Path, force: bool, samples: &[f32], sample_rate: u32) -> Result<(), String> {
+    let cannot_write = |err: io::Error| format!("cannot write {}: {err}", path.display());
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("{} is not a file path", path.display()))?;
+    let mut temp_name = OsString::from(".");
+    temp_name.push(name);
+    temp_name.push(format!(".{}.tmp", process::id()));
+    let temp_path = path.with_file_name(temp_name);
+
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
+        .map_err(cannot_write)?;
+    let temp = TempFile(temp_path);
+    let mut writer = BufWriter::new(file);
+    write_wav(&mut writer, samples, sample_rate).map_err(cannot_write)?;
+    // Closed before it is moved.
+    drop(
+        writer
+            .into_inner()
+            .map_err(|err| cannot_write(err.into_error()))?,
+    );
+
+    if force {
+        return fs::rename(&temp.0, path).map_err(cannot_write);
+    }
+    // A hard link is refused if `path` has appeared since it was checked,
+    // where a rename would replace it.
+    match fs::hard_link(&temp.0, path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => Err(already_exists(path)),
+        // Not every filesystem has hard links: check again and rename.
+        Err(_) if exists(path) => Err(already_exists(path)),
+        Err(_) => fs::rename(&temp.0, path).map_err(cannot_write),
+    }
 }
 
 #[cfg(test)]
@@ -737,7 +961,7 @@ mod tests {
 
     #[test]
     fn text_argument_is_optional_until_stdin_has_been_consulted() {
-        for command in ["encode", "decode", "transmit"] {
+        for command in ["encode", "decode", "transmit", "wav"] {
             assert_eq!(request(&[command]).text, None);
         }
         assert_eq!(request(&["encode", ""]).text.as_deref(), Some(""));
@@ -774,6 +998,7 @@ mod tests {
             assert!(request(line).strict, "{line:?}");
         }
         assert!(!request(&["encode", "SOS"]).strict);
+        assert!(request(&["wav", "SOS", "-o", "sos.wav", "--strict"]).strict);
         let err = parse_args(&args(&["transmit", "SOS", "--strict"])).unwrap_err();
         assert!(err.contains("--strict"), "{err}");
         // It is an option, so not the value of the one before it.
@@ -851,6 +1076,7 @@ mod tests {
             "PARIS PARIS",
             Timing::uniform(MAX_UNIT_MS),
             Alphabet::Latin,
+            sleep,
         )
         .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
@@ -859,11 +1085,147 @@ mod tests {
     #[test]
     fn transmit_writes_the_header_the_morse_and_one_flash_per_symbol() {
         let mut out = Vec::new();
-        transmit(&mut out, "E T", Timing::uniform(1), Alphabet::Latin).unwrap();
+        transmit(&mut out, "E T", Timing::uniform(1), Alphabet::Latin, sleep).unwrap();
         let out = String::from_utf8(out).unwrap();
         assert!(out.starts_with("Transmitting \"E T\" @ 1ms/unit\n\n. / -\n"));
         assert_eq!(out.matches('\x07').count(), 2);
         assert!(out.ends_with('\n'));
+    }
+
+    #[test]
+    fn transmit_waits_out_exactly_the_core_schedule() {
+        let waited = |text: &str, timing: Timing| {
+            let mut pauses = Vec::new();
+            transmit(&mut Vec::new(), text, timing, Alphabet::Latin, |pause| {
+                pauses.push(pause.as_millis() as u64)
+            })
+            .unwrap();
+            pauses
+        };
+        let expected = |text: &str, timing: Timing| -> Vec<u64> {
+            build_schedule(&build_signal_plan_in(text, Alphabet::Latin), timing)
+                .iter()
+                .map(|step| step.duration_ms)
+                .collect()
+        };
+        for timing in [Timing::uniform(60), Timing::farnsworth_wpm(20.0, 5.0)] {
+            for text in ["E", "A", "PARIS E", "SOS <SK>"] {
+                assert_eq!(waited(text, timing), expected(text, timing), "{text:?}");
+            }
+        }
+        // PARIS and its word gap at 20 WPM: 50 units of 60 ms, then the E.
+        let pauses = waited("PARIS E", Timing::uniform(60));
+        assert_eq!(pauses.iter().sum::<u64>(), 3000 + 60);
+        // One dot: a single wait, with no gap added after the last symbol.
+        assert_eq!(waited("E", Timing::uniform(60)), vec![60]);
+    }
+
+    #[test]
+    fn transmit_starts_a_new_line_at_each_word_gap() {
+        let mut out = Vec::new();
+        transmit(
+            &mut out,
+            "EE E E",
+            Timing::uniform(1),
+            Alphabet::Latin,
+            |_| {},
+        )
+        .unwrap();
+        let out = String::from_utf8(out).unwrap();
+        let flashes = out.split_once(". . / . / .\n").expect("the morse line").1;
+        assert_eq!(flashes.matches('\n').count(), 3, "{flashes:?}");
+        assert_eq!(flashes.matches('\x07').count(), 4);
+    }
+
+    fn wav(rest: &[&str]) -> Result<WavOutput, String> {
+        resolve_wav(&request(rest))
+    }
+
+    #[test]
+    fn wav_options_resolve_to_a_path_and_a_tone() {
+        let resolved = wav(&["wav", "SOS", "-o", "sos.wav"]).unwrap();
+        assert_eq!(
+            resolved,
+            WavOutput {
+                path: PathBuf::from("sos.wav"),
+                force: false,
+                tone: Tone::default(),
+            }
+        );
+        let resolved = wav(&[
+            "wav",
+            "--output=out/sos.wav",
+            "--force",
+            "--tone",
+            "750.5",
+            "--volume=0.5",
+            "SOS",
+        ])
+        .unwrap();
+        assert_eq!(resolved.path, PathBuf::from("out/sos.wav"));
+        assert!(resolved.force);
+        assert_eq!(resolved.tone.frequency_hz, 750.5);
+        assert_eq!(resolved.tone.volume, 0.5);
+        assert_eq!(resolved.tone.sample_rate, Tone::default().sample_rate);
+        // Both ends of each range are accepted.
+        for (tone, volume) in [("20", "0"), ("20000", "1")] {
+            assert!(
+                wav(&[
+                    "wav", "SOS", "-o", "x.wav", "--tone", tone, "--volume", volume
+                ])
+                .is_ok(),
+                "{tone} Hz at {volume}"
+            );
+        }
+        // The timing options are the ones transmit takes.
+        let parsed = request(&["wav", "SOS", "-o", "x.wav", "--wpm", "20"]);
+        assert_eq!(resolve_timing(&parsed), Ok(Timing::uniform(60)));
+    }
+
+    #[test]
+    fn wav_needs_a_real_output_path() {
+        let err = wav(&["wav", "SOS"]).unwrap_err();
+        assert!(err.contains("-o"), "{err}");
+        for path in ["-", "..", "/"] {
+            let err = wav(&["wav", "SOS", "-o", path]).unwrap_err();
+            assert!(err.contains("-o expects a file path"), "{path}: {err}");
+        }
+        let err = wav(&["wav", "SOS", "--output", "-"]).unwrap_err();
+        assert!(err.contains("standard output"), "{err}");
+        // A path that merely starts with a dash is a path.
+        assert!(wav(&["wav", "SOS", "-o", "-sos.wav"]).is_ok());
+    }
+
+    #[test]
+    fn bad_tone_or_volume_is_a_usage_error() {
+        for tone in [
+            "high", "0", "19.9", "20000.5", "-600", "nan", "inf", "-inf", "1e9",
+        ] {
+            let err = wav(&["wav", "SOS", "-o", "x.wav", "--tone", tone]).unwrap_err();
+            assert!(err.contains("--tone"), "{tone}: {err}");
+        }
+        for volume in ["loud", "-0.1", "1.01", "2", "nan", "inf", "50%"] {
+            let err = wav(&["wav", "SOS", "-o", "x.wav", "--volume", volume]).unwrap_err();
+            assert!(err.contains("--volume"), "{volume}: {err}");
+        }
+    }
+
+    #[test]
+    fn output_and_force_belong_to_wav_alone() {
+        for line in [
+            &["encode", "SOS", "-o", "sos.wav"][..],
+            &["decode", "...", "--output=sos.txt"][..],
+            &["transmit", "SOS", "-o", "sos.wav"][..],
+            &["encode", "SOS", "--force"][..],
+            &["transmit", "SOS", "--force"][..],
+        ] {
+            let err = parse_args(&args(line)).unwrap_err();
+            assert!(err.contains("applies to wav only"), "{line:?}: {err}");
+        }
+        // --force is an option, so not the value of the one before it.
+        let err = parse_args(&args(&["wav", "SOS", "-o", "--force"])).unwrap_err();
+        assert!(err.contains("-o expects a value"), "{err}");
+        assert!(usage("morse").contains("morse wav [text] -o <FILE>"));
     }
 
     #[test]

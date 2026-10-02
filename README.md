@@ -22,7 +22,7 @@ Dash = long flash/beep   (3 units)
 | Crate        | What it is                                                        |
 | ------------ | ------------------------------------------------------------------ |
 | `morse-core` | Pure encode/decode/timing logic. No I/O — fully unit tested.      |
-| `morse-cli`  | Terminal tool: `encode`, `decode`, `transmit` (bell + ANSI flash). |
+| `morse-cli`  | Terminal tool: `encode`, `decode`, `transmit` (bell + ANSI flash), `wav` (audio file). |
 | `morse-gui`  | Native desktop app (eframe/egui): live lamp + audible tone.        |
 
 ```
@@ -121,6 +121,7 @@ echo "SOS" | morse encode          # no text argument: read it from stdin
 morse transmit "HELLO WORLD"       # flashes + beeps it live in your terminal
 morse transmit "SOS" --wpm 25      # faster: 25 words-per-minute
 morse transmit "SOS" -u 60         # or set the raw unit length directly (ms)
+morse wav "SOS" -o sos.wav         # the same Morse as a WAV audio file
 morse --help                       # every option
 morse --version
 ```
@@ -147,15 +148,16 @@ morse: warning: left out 1 character with no Morse code: '~' (U+007E)
 morse: warning: left out 1 code not recognised in the latin alphabet: "..--..--"
 ```
 
-That does not change the exit code unless you pass `--strict` to `encode`
-or `decode`; the translation is printed either way.
+That does not change the exit code unless you pass `--strict` to `encode`,
+`decode` or `wav`; the translation is printed (or the file written) either
+way.
 
 | Exit code | Meaning |
 |---|---|
 | 0 | Success |
 | 1 | Usage error; the usage text follows the message on stderr |
 | 2 | `--strict` was given and something was left out |
-| 3 | Standard input could not be read (it must be UTF-8), or the output could not be written |
+| 3 | Standard input could not be read (it must be UTF-8), or the output or the WAV file could not be written |
 
 Output that is closed early, as in `morse transmit "CQ" | head -1`, ends the
 program quietly with exit code 0.
@@ -211,6 +213,27 @@ the speed `-u` works out to, or the default 12 WPM); that is a usage error.
 So is a raw gap unit (`-g`) shorter than the character unit, and so is
 giving both options of a pair that set the same thing: `--wpm` with `-u`,
 or `--farnsworth-wpm` with `-g`.
+
+**WAV files.** `morse wav` writes the transmission as audio instead of
+flashing it, with the same timing options and the same checks on them:
+
+```bash
+morse wav "PARIS PARIS" -o paris.wav --wpm 20 --farnsworth-wpm 10 --tone 700
+```
+
+The file is 16-bit mono PCM at 44100 Hz. It starts with the first tone and
+ends with the last, and every tone fades in and out over 5 ms so the keying
+does not click. `--tone` sets the pitch (20 to 20000 Hz, default 600) and
+`--volume` the peak level (0 to 1, default 0.2).
+
+`-o` is required and takes a file path; `-o -` is not standard output. A
+file that already exists is left alone (exit code 3) unless you pass
+`--force`. The audio goes to a temporary file next to the target, which is
+moved into place once complete, so a run that fails leaves no partial file.
+Characters with no Morse code are left out and named on stderr as for
+`encode`, and `--strict` turns that into exit code 2; the file is written
+either way. One file holds at most 172.8 million samples, about 65 minutes;
+a longer transmission is refused (exit code 3).
 
 ## Alphabets
 
@@ -311,7 +334,12 @@ cargo run --release -p morse-gui
 - Drag the **Character speed** slider (in WPM); tick **Farnsworth
   timing** to reveal a second, slower **Effective speed** slider for the
   letter/word gaps.
-- Hit **▶ Transmit** — the lamp flashes and a tone plays in sync.
+- Hit **▶ Transmit** — the lamp flashes and a tone plays in sync. **⏹ Stop**
+  ends it early. The **Tone** (300 to 1200 Hz) and **Volume** sliders apply
+  from the next transmission. With no sound output available, the lamp
+  still flashes and the status line says so.
+- Characters with no Morse code, and codes that are not recognised, are
+  left out of the result and listed in the status line under the lamp.
 - Pick the **Alphabet** (auto-detected by default) and the interface
   **Language**: English, Español, Français, Deutsch, Italiano, Português,
   Русский, Українська, Ελληνικά, 日本語, 한국어 or 简体中文. The language
