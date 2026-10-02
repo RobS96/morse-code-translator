@@ -53,7 +53,12 @@ It's hardened as follows:
   CI on every push/PR and gate releases.
 - Release archives are published with SHA-256 checksum files and GitHub
   build provenance attestations; verify a download with
-  `gh attestation verify <file> --repo RobS96/morse-code-translator`.
+  `gh attestation verify <file> --repo RobS96/morse-code-translator
+  --signer-workflow RobS96/morse-code-translator/.github/workflows/ci.yml`.
+- A release is published only from a signed, annotated tag that GitHub
+  verifies, on a commit that is already on `main`; the workflow checks
+  both before it publishes, and that the tag matches the version the
+  binaries report.
 
 If you still find a security issue:
 

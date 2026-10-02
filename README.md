@@ -87,11 +87,17 @@ Get-FileHash .\morse-*-windows-x86_64.zip -Algorithm SHA256
 ```
 
 On any platform, [GitHub CLI](https://cli.github.com) can confirm the
-archive was built by this repository's release workflow:
+archive was built by this repository's release workflow, from a release
+tag:
 
 ```bash
-gh attestation verify <archive> --repo RobS96/morse-code-translator
+gh attestation verify <archive> --repo RobS96/morse-code-translator \
+  --signer-workflow RobS96/morse-code-translator/.github/workflows/ci.yml
 ```
+
+Without `--signer-workflow`, an attestation from any workflow in the
+repository would be accepted. A release is only published from a signed
+tag on a commit that is on `main`.
 
 Things to know before running a downloaded binary:
 
@@ -100,9 +106,8 @@ Things to know before running a downloaded binary:
   they carry the quarantine flag a browser download adds; after verifying
   the archive as above, clear it with
   `xattr -d com.apple.quarantine morse morse-gui`.
-- **Linux:** the binaries are built on GitHub's current Ubuntu runner and
-  need a glibc at least as new as that release's. On an older distribution,
-  build from source. `morse-gui` also needs the X11/xkbcommon, OpenGL and
+- **Linux:** the binaries are built on Ubuntu 24.04 and need glibc 2.39 or
+  newer. On an older distribution, build from source. `morse-gui` also needs the X11/xkbcommon, OpenGL and
   ALSA runtime libraries, which desktop installs already have.
 - **Windows:** SmartScreen may warn about an unsigned download.
 
@@ -369,7 +374,8 @@ cargo run --release -p morse-gui
 - Pick the **Alphabet** (auto-detected by default) and the interface
   **Language**: English, Español, Français, Deutsch, Italiano, Português,
   Русский, Українська, Ελληνικά, 日本語, 한국어 or 简体中文. The language
-  defaults from `LANGUAGE`/`LC_ALL`/`LC_MESSAGES`/`LANG`.
+  defaults from `LANGUAGE`/`LC_ALL`/`LC_MESSAGES`/`LANG`; Windows does not
+  set these, so it starts in English there.
 - Hebrew, Arabic, Japanese, Korean and Chinese glyphs use a font from
   your OS (Arial Unicode on macOS; Noto/DejaVu on Linux; Arial, Yu
   Gothic, Malgun Gothic or Microsoft YaHei on Windows). Nothing is bundled
@@ -395,7 +401,8 @@ cargo test --locked --workspace
 
 CI (`.github/workflows/ci.yml`) runs all three on **Ubuntu, macOS, and
 Windows** for every push/PR, along with `cargo deny check` and `cargo vet
-check`, and builds per-OS release binaries on tags.
+check`. It also builds the per-OS release archives on every run, and
+publishes them when a release tag is pushed.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full workflow, and
 [`CHANGELOG.md`](CHANGELOG.md) for release history.
