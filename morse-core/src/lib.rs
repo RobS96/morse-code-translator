@@ -8,7 +8,12 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 mod alphabets;
+mod audio;
 pub use alphabets::{Alphabet, normalize_input};
+pub use audio::{
+    MAX_FREQUENCY_HZ, MAX_RENDER_SAMPLES, MAX_SAMPLE_RATE, MIN_FREQUENCY_HZ, MIN_SAMPLE_RATE,
+    RenderError, Tone, render_samples, render_schedule, write_wav,
+};
 
 /// One Morse "unit" in milliseconds. A dot is 1 unit, a dash is 3 units.
 pub const UNIT_MS: u64 = 100;
@@ -203,17 +208,24 @@ static TABLE: LazyLock<HashMap<char, &'static str>> = LazyLock::new(|| {
     ])
 });
 
+/// Characters every alphabet sends with another character's code, and so
+/// never decodes: ITU-R M.1677-1 gives the multiplication sign the code of
+/// the letter X.
+const ENCODE_ONLY: &[(char, &str)] = &[('×', "-..-")];
+
 /// Per-alphabet lookup tables: (encode map, decode map).
 ///
 /// Encode: the ASCII table (so mixed text like "QTH Москва" works), then
 /// the alphabet's own letters, which win on any clash (Wabun's 、。（）).
-/// Latin also accepts accented extensions. Decode: shared digits and
-/// punctuation, Latin letters only for [`Alphabet::Latin`], then the
-/// alphabet's letters; the first letter listed for a code wins (so the
+/// Latin also accepts accented extensions. Decode: the ASCII table, for
+/// [`Alphabet::Latin`] one accented letter per extension code that nothing
+/// else uses, then the alphabet's letters, which win on any clash: a
+/// Latin letter is decoded only where the alphabet has no letter of its
+/// own for the code. The first letter listed for a code wins (so the
 /// Russian letter, not the Ukrainian/Bulgarian variant, is decoded).
 struct Tables {
     encode: HashMap<char, &'static str>,
-    decode: HashMap<&'static str, char>,
+    decode: HashMap<&'static str, String>,
 }
 
 static TABLES: LazyLock<HashMap<Alphabet, Tables>> = LazyLock::new(|| {
@@ -221,19 +233,26 @@ static TABLES: LazyLock<HashMap<Alphabet, Tables>> = LazyLock::new(|| {
         .iter()
         .map(|&alphabet| {
             let mut encode: HashMap<char, &'static str> = TABLE.clone();
+            encode.extend(ENCODE_ONLY.iter().copied());
             if alphabet == Alphabet::Latin {
                 encode.extend(alphabets::LATIN_EXTENSIONS.iter().copied());
             }
             encode.extend(alphabet.letters().iter().copied());
 
-            let mut decode: HashMap<&'static str, char> = TABLE
+            let mut decode: HashMap<&'static str, String> = TABLE
                 .iter()
-                .filter(|(c, _)| alphabet == Alphabet::Latin || !c.is_alphabetic())
-                .map(|(&c, &code)| (code, c))
+                .map(|(&c, &code)| (code, c.to_string()))
                 .collect();
-            let mut own: HashMap<&'static str, char> = HashMap::new();
+            if alphabet == Alphabet::Latin {
+                decode.extend(
+                    alphabets::LATIN_DECODE_EXTENSIONS
+                        .iter()
+                        .map(|&(code, text)| (code, text.to_string())),
+                );
+            }
+            let mut own: HashMap<&'static str, String> = HashMap::new();
             for &(c, code) in alphabet.letters() {
-                own.entry(code).or_insert(c);
+                own.entry(code).or_insert_with(|| c.to_string());
             }
             decode.extend(own);
             (alphabet, Tables { encode, decode })
@@ -247,6 +266,10 @@ fn table_chars(c: char, alphabet: Alphabet) -> Vec<char> {
     if let Some(d) = alphabets::ascii_digit(c) {
         return vec![d];
     }
+    // ITU-R M.1677-1 (part I, 3.3.1): % has no code and is sent as 0/0.
+    if c == '%' {
+        return vec!['0', '/', '0'];
+    }
     c.to_uppercase()
         .flat_map(|u| alphabets::expand(u, alphabet))
         .collect()
@@ -257,8 +280,15 @@ fn table_chars(c: char, alphabet: Alphabet) -> Vec<char> {
 fn codes_for_word(word: &str, alphabet: Alphabet, skipped: &mut Vec<char>) -> Vec<&'static str> {
     let encode = &TABLES[&alphabet].encode;
     let mut codes = Vec::new();
+    let mut after_digit = false;
     for c in word.chars() {
-        let table_chars = table_chars(c, alphabet);
+        let mut table_chars = table_chars(c, alphabet);
+        // ITU-R M.1677-1 (part I, 3.3.2): a number is joined to its % by a
+        // hyphen, so 2% is sent as 2-0/0 and not as 20/0.
+        if c == '%' && after_digit {
+            table_chars.insert(0, '-');
+        }
+        after_digit = c != '%' && table_chars.last().is_some_and(char::is_ascii_digit);
         let before = codes.len();
         codes.extend(table_chars.iter().filter_map(|t| encode.get(t).copied()));
         if codes.len() - before != table_chars.len() || table_chars.is_empty() {
@@ -268,11 +298,11 @@ fn codes_for_word(word: &str, alphabet: Alphabet, skipped: &mut Vec<char>) -> Ve
     codes
 }
 
-/// Procedural signs ("prosigns"): pairs of letters conventionally sent
-/// fused together, with no inter-letter gap, and treated by operators as
-/// a single procedural signal rather than two letters. Written here in
-/// `<NAME>` form (e.g. `<SK>`), the standard on-paper notation for a
-/// prosign (normally typeset with an overline). Values are the fused
+/// Procedural signs ("prosigns"): letters (usually a pair) conventionally
+/// sent fused together, with no inter-letter gap, and treated by operators
+/// as a single procedural signal rather than separate letters. Written
+/// here in `<NAME>` form (e.g. `<SK>`), the standard on-paper notation for
+/// a prosign (normally typeset with an overline). Values are the fused
 /// dot/dash string with no separators, matching how the signs sound on
 /// the air.
 /// **Ambiguity note:** several prosigns reuse the exact fused code of an
@@ -285,51 +315,97 @@ fn codes_for_word(word: &str, alphabet: Alphabet, skipped: &mut Vec<char>) -> Ve
 /// complete, unambiguous single-character meaning.
 static PROSIGNS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
     HashMap::from([
-        ("AR", ".-.-."),   // end of message
-        ("AS", ".-..."),   // wait
-        ("BK", "-...-.-"), // break (into a contact)
-        ("BT", "-...-"),   // new paragraph / break
-        ("CT", "-.-.-"),   // start of transmission / commence copying
-        ("KN", "-.--."),   // invite a specific station to transmit
-        ("SK", "...-.-"),  // end of contact
-        ("SN", "...-."),   // understood (also written VE)
+        ("AR", ".-.-."),      // end of message
+        ("AS", ".-..."),      // wait
+        ("BK", "-...-.-"),    // break (into a contact)
+        ("BT", "-...-"),      // new paragraph / break
+        ("CT", "-.-.-"),      // start of transmission / commence copying (also written KA)
+        ("HH", "........"),   // error: disregard what was just sent
+        ("KN", "-.--."),      // invite a specific station to transmit
+        ("SK", "...-.-"),     // end of contact (also written VA)
+        ("SN", "...-."),      // understood (also written VE)
+        ("SOS", "...---..."), // distress
     ])
 });
+
+/// Other names a prosign is written under, as `(alias, name in PROSIGNS)`:
+/// different letters that fuse into the same code. Accepted on encode;
+/// decode always gives the name in [`PROSIGNS`].
+const PROSIGN_ALIASES: &[(&str, &str)] = &[("KA", "CT"), ("VA", "SK"), ("VE", "SN")];
+
+/// Length of the longest prosign name or alias, which bounds how far past
+/// a `<` [`split_prosigns`] looks for the closing `>`.
+const PROSIGN_NAME_MAX: usize = 3;
 
 static REVERSE_PROSIGNS: LazyLock<HashMap<&'static str, &'static str>> =
     LazyLock::new(|| PROSIGNS.iter().map(|(&name, &code)| (code, name)).collect());
 
-/// Split `<NAME>` prosign markers (any case) out of text, e.g.
-/// `"CQ <AR>"` -> `[Word("CQ"), Prosign("AR")]` per whitespace-separated word.
-enum Token<'a> {
-    Word(&'a str),
-    Prosign(&'a str),
+/// The fused code of the prosign written `name` (any case, or an alias).
+fn prosign_code(name: &str) -> Option<&'static str> {
+    let name = name.to_uppercase();
+    let name = PROSIGN_ALIASES
+        .iter()
+        .find(|(alias, _)| *alias == name)
+        .map_or(name.as_str(), |&(_, canonical)| canonical);
+    PROSIGNS.get(name).copied()
 }
 
-fn tokenize(text: &str) -> Vec<Token<'_>> {
-    let mut tokens = Vec::new();
-    for word in text.split_whitespace() {
-        if let Some(name) = word.strip_prefix('<').and_then(|s| s.strip_suffix('>'))
-            && let Some((&key, _)) = PROSIGNS.get_key_value(name.to_uppercase().as_str())
+/// One piece of a whitespace-separated word: plain text, or the fused
+/// code of a `<NAME>` prosign marker.
+enum Part<'a> {
+    Text(&'a str),
+    Prosign(&'static str),
+}
+
+/// Split `<NAME>` prosign markers (any case) out of a word, e.g.
+/// `"SOS<SK>"` -> `[Text("SOS"), Prosign("...-.-")]`. A `<...>` that names
+/// no known prosign stays text.
+fn split_prosigns(word: &str) -> Vec<Part<'_>> {
+    let mut parts = Vec::new();
+    let mut text_start = 0;
+    let mut from = 0;
+    while let Some(open) = word[from..].find('<').map(|i| from + i) {
+        let name_start = open + 1;
+        let close = word[name_start..]
+            .char_indices()
+            .take(PROSIGN_NAME_MAX + 1)
+            .find(|&(_, c)| c == '>')
+            .map(|(i, _)| name_start + i);
+        if let Some(close) = close
+            && let Some(code) = prosign_code(&word[name_start..close])
         {
-            tokens.push(Token::Prosign(key));
-            continue;
+            if text_start < open {
+                parts.push(Part::Text(&word[text_start..open]));
+            }
+            parts.push(Part::Prosign(code));
+            text_start = close + 1;
+            from = close + 1;
+        } else {
+            from = name_start;
         }
-        tokens.push(Token::Word(word));
     }
-    tokens
+    if text_start < word.len() {
+        parts.push(Part::Text(&word[text_start..]));
+    }
+    parts
 }
 
 /// The Morse words `text` is sent as, each a list of letter codes. A
-/// prosign is a word of one fused code. Input is normalised first
+/// prosign is one fused code within its word. Input is normalised first
 /// ([`normalize_input`]); a word none of whose characters has a code is
 /// left out entirely rather than sent as an empty word.
 fn encode_words(text: &str, alphabet: Alphabet, skipped: &mut Vec<char>) -> Vec<Vec<&'static str>> {
-    tokenize(&normalize_input(text))
-        .into_iter()
-        .map(|token| match token {
-            Token::Prosign(name) => vec![PROSIGNS[name]],
-            Token::Word(word) => codes_for_word(word, alphabet, skipped),
+    normalize_input(text)
+        .split_whitespace()
+        .map(|word| {
+            let mut codes = Vec::new();
+            for part in split_prosigns(word) {
+                match part {
+                    Part::Prosign(code) => codes.push(code),
+                    Part::Text(text) => codes.extend(codes_for_word(text, alphabet, skipped)),
+                }
+            }
+            codes
         })
         .filter(|codes| !codes.is_empty())
         .collect()
@@ -354,7 +430,8 @@ pub struct EncodeReport {
 /// with no characters is dropped with them; use [`encode_lossy_report`] to
 /// learn which. Words stay separated by " / ". A `<NAME>` token (e.g.
 /// `<SK>`, `<AR>`) matching a known prosign is sent as a single fused
-/// character instead of being letter-decomposed.
+/// character instead of being letter-decomposed, whether it stands alone
+/// or inside a word (`SOS<SK>`).
 pub fn encode(text: &str) -> String {
     encode_in(text, Alphabet::detect(text))
 }
@@ -382,9 +459,46 @@ pub fn encode_lossy_report_in(text: &str, alphabet: Alphabet) -> EncodeReport {
     EncodeReport { morse, skipped }
 }
 
+/// The result of a lossy decode: the text, plus what was left out of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodeReport {
+    /// The decoded text, exactly as [`decode_in`] returns it.
+    pub text: String,
+    /// Every code that is neither in the alphabet's table nor a prosign
+    /// and was dropped, in input order, repeats included. Codes are
+    /// reported as they stand after look-alike symbols are rewritten (see
+    /// [`decode`]). Whitespace and "/" are separators, not dropped codes.
+    pub skipped: Vec<String>,
+}
+
+/// Rewrite the look-alike characters that autocorrect, word processors and
+/// other Morse tools put in place of the dots, dashes and word separators
+/// [`decode`] reads. No Morse code contains any of them.
+fn normalize_morse(morse: &str) -> String {
+    let mut out = String::with_capacity(morse.len());
+    for c in morse.chars() {
+        match c {
+            // Middle dot, bullet.
+            '\u{00B7}' | '\u{2022}' => out.push('.'),
+            // Minus sign, en dash, em dash, underscore.
+            '\u{2212}' | '\u{2013}' | '\u{2014}' | '_' => out.push('-'),
+            // Horizontal ellipsis.
+            '\u{2026}' => out.push_str("..."),
+            '|' => out.push('/'),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// Decode Morse back into Latin text. Letters are space-separated, words
 /// separated by "/". e.g. "... --- ..." -> "SOS". A fused code matching a
 /// known prosign (no internal spaces) decodes to its `<NAME>` form.
+///
+/// Common look-alikes are read as the symbol they stand for: `·` `•` as
+/// `.`, `−` `–` `—` `_` as `-`, `…` as `...` and `|` as `/`. Unknown codes
+/// are dropped, and a word left with no letters is dropped with them; use
+/// [`decode_lossy_report`] to learn which.
 pub fn decode(morse: &str) -> String {
     decode_in(morse, Alphabet::Latin)
 }
@@ -393,30 +507,46 @@ pub fn decode(morse: &str) -> String {
 /// different letters in each. Japanese recombines voiced kana (か゛ -> が),
 /// Hebrew restores word-final letter forms (מ -> ם at the end of a word);
 /// Korean yields jamo, since regrouping them into syllables is ambiguous.
+/// The code of a Latin letter that the alphabet has no letter of its own
+/// for decodes to the Latin letter.
 pub fn decode_in(morse: &str, alphabet: Alphabet) -> String {
+    decode_lossy_report_in(morse, alphabet).text
+}
+
+/// [`decode`], also reporting the codes that were dropped because they
+/// are not Morse the Latin alphabet knows.
+pub fn decode_lossy_report(morse: &str) -> DecodeReport {
+    decode_lossy_report_in(morse, Alphabet::Latin)
+}
+
+/// [`decode_lossy_report`] with an explicit alphabet (see [`decode_in`]).
+pub fn decode_lossy_report_in(morse: &str, alphabet: Alphabet) -> DecodeReport {
     let table = &TABLES[&alphabet].decode;
-    let text = morse
+    let mut skipped = Vec::new();
+    let text = normalize_morse(morse)
         .split('/')
         .map(|word| {
-            word.split_whitespace()
-                .map(|code| match table.get(code) {
-                    Some(&c) => c.to_string(),
-                    None => match REVERSE_PROSIGNS.get(code) {
-                        Some(&name) => format!("<{name}>"),
-                        None => String::new(),
-                    },
-                })
-                .collect::<String>()
+            let mut text = String::new();
+            for code in word.split_whitespace() {
+                if let Some(letter) = table.get(code) {
+                    text.push_str(letter);
+                } else if let Some(name) = REVERSE_PROSIGNS.get(code) {
+                    text.push_str(&format!("<{name}>"));
+                } else {
+                    skipped.push(code.to_string());
+                }
+            }
+            text
         })
+        .filter(|word| !word.is_empty())
         .collect::<Vec<_>>()
-        .join(" ")
-        .trim()
-        .to_string();
-    match alphabet {
+        .join(" ");
+    let text = match alphabet {
         Alphabet::Japanese => alphabets::compose_kana(&text),
         Alphabet::Hebrew => alphabets::hebrew_final_forms(&text),
         _ => text,
-    }
+    };
+    DecodeReport { text, skipped }
 }
 
 /// Turn text into a flat sequence of timed [`Signal`]s, ready for a
@@ -425,14 +555,17 @@ pub fn decode_in(morse: &str, alphabet: Alphabet) -> String {
 /// signal between them — exactly like the dots/dashes *within* an ordinary
 /// letter — since a transmitter already inserts a fixed 1-unit pause after
 /// every dot/dash regardless of Signal boundaries; only one [`Signal::LetterGap`]
-/// follows the whole fused prosign, not one per constituent letter.
+/// separates the whole fused prosign from the next letter, not one per
+/// constituent letter. [`build_schedule`] lays the plan out in time, with
+/// those pauses in place.
 pub fn build_signal_plan(text: &str) -> Vec<Signal> {
     build_signal_plan_in(text, Alphabet::detect(text))
 }
 
 /// [`build_signal_plan`] with an explicit alphabet (see [`encode_in`]).
 /// Words with nothing to send are skipped, so the plan never holds two
-/// word gaps in a row or a leading or trailing one.
+/// word gaps in a row or a leading or trailing one. A letter gap follows
+/// every letter but the last: the plan ends on the final dot or dash.
 pub fn build_signal_plan_in(text: &str, alphabet: Alphabet) -> Vec<Signal> {
     let mut plan = Vec::new();
     for (i, codes) in encode_words(text, alphabet, &mut Vec::new())
@@ -440,13 +573,16 @@ pub fn build_signal_plan_in(text: &str, alphabet: Alphabet) -> Vec<Signal> {
         .enumerate()
     {
         if i != 0 {
+            plan.push(Signal::LetterGap);
             plan.push(Signal::WordGap);
         }
-        for code in codes {
+        for (j, code) in codes.into_iter().enumerate() {
+            if j != 0 {
+                plan.push(Signal::LetterGap);
+            }
             for symbol in code.chars() {
                 push_symbol(&mut plan, symbol);
             }
-            plan.push(Signal::LetterGap);
         }
     }
     plan
@@ -458,6 +594,88 @@ fn push_symbol(plan: &mut Vec<Signal>, symbol: char) {
         '-' => plan.push(Signal::Dash),
         _ => {}
     }
+}
+
+/// What a [`ScheduleStep`] is: a tone, or one of the three silences that
+/// separate tones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepKind {
+    /// Key down: the tone and the lamp are on.
+    Tone,
+    /// Silence between two symbols of one letter (or of a fused prosign).
+    SymbolGap,
+    /// Silence between two letters.
+    LetterGap,
+    /// Silence between two words.
+    WordGap,
+}
+
+/// One step of a transmission as it is keyed: a tone or a silence, and how
+/// long it lasts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScheduleStep {
+    pub kind: StepKind,
+    pub duration_ms: u64,
+}
+
+impl ScheduleStep {
+    pub fn is_tone(&self) -> bool {
+        self.kind == StepKind::Tone
+    }
+}
+
+/// Lay a signal plan out in time: every tone and every silence of the
+/// transmission, in order, each with its full duration under `timing`.
+///
+/// This is the one place the unit of silence after a symbol is added: a
+/// [`Signal`]'s own duration leaves it out, so a transmitter that plays a
+/// plan signal by signal would have to add it itself. In the schedule a
+/// single silence separates each tone from the next, 1 character unit
+/// inside a letter and 3 or 7 spacing units between letters or words, and
+/// nothing follows a tone that ends the plan. A plan built by hand may
+/// start or end with gaps; those are kept as silences of their own.
+pub fn build_schedule(plan: &[Signal], timing: Timing) -> Vec<ScheduleStep> {
+    let mut schedule: Vec<ScheduleStep> = Vec::with_capacity(plan.len() * 2);
+    for (i, signal) in plan.iter().enumerate() {
+        let duration_ms = signal.duration_ms_timed(timing);
+        if signal.is_tone() {
+            schedule.push(ScheduleStep {
+                kind: StepKind::Tone,
+                duration_ms,
+            });
+            if i + 1 < plan.len() {
+                schedule.push(ScheduleStep {
+                    kind: StepKind::SymbolGap,
+                    duration_ms: timing.char_unit_ms,
+                });
+            }
+            continue;
+        }
+        let kind = match signal {
+            Signal::WordGap => StepKind::WordGap,
+            _ => StepKind::LetterGap,
+        };
+        // A gap signal widens the silence already running, if there is
+        // one: the unit after a symbol, or an earlier gap.
+        match schedule.last_mut() {
+            Some(silence) if !silence.is_tone() => {
+                silence.duration_ms = silence.duration_ms.saturating_add(duration_ms);
+                if silence.kind != StepKind::WordGap {
+                    silence.kind = kind;
+                }
+            }
+            _ => schedule.push(ScheduleStep { kind, duration_ms }),
+        }
+    }
+    schedule
+}
+
+/// Total length of a schedule in milliseconds, saturating rather than
+/// overflowing.
+pub fn schedule_duration_ms(schedule: &[ScheduleStep]) -> u64 {
+    schedule
+        .iter()
+        .fold(0, |total, step| total.saturating_add(step.duration_ms))
 }
 
 #[cfg(test)]
@@ -599,9 +817,9 @@ mod tests {
     }
 
     #[test]
-    fn signal_plan_for_e_is_a_single_dot_and_letter_gap() {
+    fn signal_plan_for_e_is_a_single_dot() {
         let plan = build_signal_plan("E");
-        assert_eq!(plan, vec![Signal::Dot, Signal::LetterGap]);
+        assert_eq!(plan, vec![Signal::Dot]);
     }
 
     #[test]
@@ -609,13 +827,7 @@ mod tests {
         let plan = build_signal_plan("E E");
         assert_eq!(
             plan,
-            vec![
-                Signal::Dot,
-                Signal::LetterGap,
-                Signal::WordGap,
-                Signal::Dot,
-                Signal::LetterGap
-            ]
+            vec![Signal::Dot, Signal::LetterGap, Signal::WordGap, Signal::Dot]
         );
     }
 
@@ -701,6 +913,132 @@ mod tests {
         }
     }
 
+    /// Shorthand for a schedule step.
+    fn step(kind: StepKind, duration_ms: u64) -> ScheduleStep {
+        ScheduleStep { kind, duration_ms }
+    }
+
+    #[test]
+    fn schedule_separates_tones_by_exactly_one_silence() {
+        let timing = Timing::uniform(60);
+        // A is dot dash: one character unit of silence between them.
+        assert_eq!(
+            build_schedule(&build_signal_plan("A"), timing),
+            vec![
+                step(StepKind::Tone, 60),
+                step(StepKind::SymbolGap, 60),
+                step(StepKind::Tone, 180),
+            ]
+        );
+        // Letters are 3 units apart and words 7, each as a single silence.
+        assert_eq!(
+            build_schedule(&build_signal_plan("EE E"), timing),
+            vec![
+                step(StepKind::Tone, 60),
+                step(StepKind::LetterGap, 180),
+                step(StepKind::Tone, 60),
+                step(StepKind::WordGap, 420),
+                step(StepKind::Tone, 60),
+            ]
+        );
+        for text in ["SOS", "CQ CQ <AR>", "한글", "PARIS PARIS"] {
+            let schedule = build_schedule(&build_signal_plan(text), timing);
+            assert!(schedule.len() % 2 == 1, "{text:?}");
+            for (i, step) in schedule.iter().enumerate() {
+                assert_eq!(step.is_tone(), i % 2 == 0, "{text:?}: step {i}");
+            }
+        }
+        assert_eq!(build_schedule(&[], timing), vec![]);
+    }
+
+    #[test]
+    fn schedule_stretches_only_letter_and_word_gaps_under_farnsworth() {
+        let timing = Timing::farnsworth_wpm(20.0, 5.0);
+        assert_eq!(
+            build_schedule(&build_signal_plan("AE E"), timing),
+            vec![
+                step(StepKind::Tone, 60),
+                step(StepKind::SymbolGap, 60),
+                step(StepKind::Tone, 180),
+                step(StepKind::LetterGap, 3 * 534),
+                step(StepKind::Tone, 60),
+                step(StepKind::WordGap, 7 * 534),
+                step(StepKind::Tone, 60),
+            ]
+        );
+    }
+
+    /// How long `text` takes from its first tone to the first tone of a
+    /// word sent after it: the text plus one word gap.
+    fn word_period_ms(text: &str, timing: Timing) -> u64 {
+        let schedule = build_schedule(&build_signal_plan(&format!("{text} E")), timing);
+        let (last_tone, rest) = schedule.split_last().expect("a schedule");
+        assert!(last_tone.is_tone());
+        schedule_duration_ms(rest)
+    }
+
+    #[test]
+    fn schedule_for_paris_lasts_one_word_period() {
+        // PARIS and its word gap are 50 units: 60s / 20 WPM = 3000 ms.
+        assert_eq!(word_period_ms("PARIS", Timing::uniform(60)), 3000);
+        assert_eq!(
+            word_period_ms("PARIS", Timing::uniform(wpm_to_unit_ms(20.0))),
+            3000
+        );
+        // At 20/5 Farnsworth the same word lasts 60s / 5 WPM = 12s, less
+        // the rounding of the spacing unit over its 19 spacing units.
+        let farnsworth = word_period_ms("PARIS", Timing::farnsworth_wpm(20.0, 5.0));
+        assert_eq!(farnsworth, 31 * 60 + 19 * 534);
+        assert!(farnsworth.abs_diff(12_000) <= 19, "{farnsworth}ms");
+        // Without a following word, the schedule stops at the last tone:
+        // 43 units.
+        let alone = build_schedule(&build_signal_plan("PARIS"), Timing::uniform(60));
+        assert_eq!(schedule_duration_ms(&alone), 43 * 60);
+        assert!(alone.last().is_some_and(ScheduleStep::is_tone));
+    }
+
+    #[test]
+    fn schedule_keeps_the_gaps_of_a_hand_built_plan() {
+        let timing = Timing::uniform(10);
+        // Leading and trailing gaps are silences of their own; the unit
+        // after a tone is only added when something follows the tone.
+        assert_eq!(
+            build_schedule(
+                &[
+                    Signal::LetterGap,
+                    Signal::Dot,
+                    Signal::WordGap,
+                    Signal::Dash,
+                    Signal::LetterGap,
+                ],
+                timing
+            ),
+            vec![
+                step(StepKind::LetterGap, 20),
+                step(StepKind::Tone, 10),
+                step(StepKind::WordGap, 50),
+                step(StepKind::Tone, 30),
+                step(StepKind::LetterGap, 30),
+            ]
+        );
+        // A word gap stays a word gap whatever is merged into it.
+        assert_eq!(
+            build_schedule(
+                &[Signal::Dot, Signal::WordGap, Signal::LetterGap, Signal::Dot],
+                timing
+            )[1],
+            step(StepKind::WordGap, 70)
+        );
+    }
+
+    #[test]
+    fn schedule_does_not_overflow_on_a_huge_raw_unit_length() {
+        let schedule = build_schedule(&build_signal_plan("EE E"), Timing::uniform(u64::MAX));
+        assert_eq!(schedule.len(), 5);
+        assert!(schedule.iter().all(|step| step.duration_ms == u64::MAX));
+        assert_eq!(schedule_duration_ms(&schedule), u64::MAX);
+    }
+
     #[test]
     fn encodes_known_prosign() {
         assert_eq!(encode("CQ <AR>"), "-.-. --.- / .-.-.");
@@ -718,7 +1056,7 @@ mod tests {
     fn prosign_round_trips() {
         // Only prosigns whose fused code doesn't also spell a punctuation
         // mark can round-trip; see the collision test below for the rest.
-        for name in ["BK", "CT", "SK", "SN"] {
+        for name in ["BK", "CT", "HH", "SK", "SN", "SOS"] {
             let text = format!("<{name}>");
             assert_eq!(
                 decode(&encode(&text)),
@@ -811,7 +1149,7 @@ mod tests {
             decode_in(&encode("ばんごう"), Alphabet::Japanese),
             "ばんごう"
         );
-        assert_eq!(encode("、。"), ".-.-.- .-.-..");
+        assert_eq!(encode_in("、。", Alphabet::Japanese), ".-.-.- .-.-..");
     }
 
     #[test]
@@ -827,7 +1165,7 @@ mod tests {
     }
 
     #[test]
-    fn latin_extensions_encode_but_decode_stays_ascii() {
+    fn latin_extensions_encode_and_a_prosign_code_stays_a_prosign() {
         assert_eq!(encode("Ñ"), "--.--");
         assert_eq!(encode("straße"), encode("STRASSE"));
         // Ŝ shares its code with the SN prosign; decode keeps the prosign.
@@ -867,8 +1205,8 @@ mod tests {
     fn signal_plan_fuses_prosign_without_letter_gap() {
         // <AR> = A(.-) + R(.-.) fused: .-.-. — symbols run back-to-back
         // with no gap signal between them (same as within any ordinary
-        // multi-symbol letter), and only one LetterGap at the very end.
-        let plan = build_signal_plan("<AR>");
+        // multi-symbol letter), and one LetterGap before the next letter.
+        let plan = build_signal_plan("<AR>E");
         assert_eq!(
             plan,
             vec![
@@ -878,7 +1216,438 @@ mod tests {
                 Signal::Dash,
                 Signal::Dot,
                 Signal::LetterGap,
+                Signal::Dot,
             ]
         );
+    }
+
+    #[test]
+    fn signal_plan_never_ends_with_a_gap() {
+        for text in ["E", "E E", "SOS <SK>", "E ~", "~ E ~", "한글", "שלום", ""] {
+            let plan = build_signal_plan(text);
+            assert!(
+                plan.last().is_none_or(Signal::is_tone),
+                "{text:?}: plan ends with {:?}",
+                plan.last()
+            );
+        }
+        // Gaps sit between letters and between words, nowhere else.
+        assert_eq!(
+            build_signal_plan("EE E"),
+            vec![
+                Signal::Dot,
+                Signal::LetterGap,
+                Signal::Dot,
+                Signal::LetterGap,
+                Signal::WordGap,
+                Signal::Dot,
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_accepts_look_alike_dots_dashes_and_separators() {
+        // Middle dot and bullet; minus sign, en dash, em dash and
+        // underscore; ellipsis; vertical bar.
+        assert_eq!(decode("··· −−− ···"), "SOS");
+        assert_eq!(decode("••• ––– •••"), "SOS");
+        assert_eq!(decode("… ——— …"), "SOS");
+        assert_eq!(decode("._ _..."), "AB");
+        assert_eq!(decode(".- | -..."), "A B");
+        assert_eq!(decode(".-|-..."), "A B");
+        assert_eq!(decode_in("·−", Alphabet::Cyrillic), "А");
+    }
+
+    #[test]
+    fn decode_leaves_no_double_space_for_an_empty_or_unknown_word() {
+        assert_eq!(decode(".- // -..."), "A B");
+        assert_eq!(decode(".- / / -..."), "A B");
+        assert_eq!(decode("/ .- /"), "A");
+        assert_eq!(decode(".- / ..--..-- / -..."), "A B");
+        assert_eq!(decode("//"), "");
+        assert_eq!(decode_in("-- // --", Alphabet::Hebrew), "ם ם");
+    }
+
+    #[test]
+    fn accented_latin_round_trips_through_its_canonical_letter() {
+        assert_eq!(decode(&encode("MÜNCHEN ÑU")), "MÜNCHEN ÑU");
+        for (code, text) in [
+            ("..--", "Ü"),
+            ("---.", "Ö"),
+            (".-.-", "Ä"),
+            ("--.--", "Ñ"),
+            ("----", "CH"),
+            (".--.-", "Å"),
+            ("..-..", "É"),
+            ("-.-..", "Ç"),
+            (".-..-", "È"),
+            ("..--.", "Ð"),
+            ("--.-.", "Ĝ"),
+            (".---.", "Ĵ"),
+            ("...-...", "Ś"),
+            (".--..", "Þ"),
+            ("--..-.", "Ź"),
+            ("--..-", "Ż"),
+        ] {
+            assert_eq!(decode(code), text, "{code}");
+            assert_eq!(decode(&encode(text)), text, "{text}");
+        }
+        // Letters that share a code come back as the canonical one.
+        assert_eq!(decode(&encode("ŬØÆŃŠÀĘ")), "ÜÖÄÑCHÅÉ");
+        // The extension codes are Latin's only: other alphabets keep
+        // their own letters for them.
+        assert_eq!(decode_in("..--", Alphabet::Cyrillic), "Ю");
+        assert_eq!(decode_in("----", Alphabet::Greek), "Χ");
+    }
+
+    #[test]
+    fn latin_letters_without_a_native_code_decode_as_themselves() {
+        for (text, alphabet) in [
+            ("JUV", Alphabet::Greek),
+            ("FVXY", Alphabet::Hebrew),
+            ("P", Alphabet::Arabic),
+        ] {
+            assert_eq!(
+                decode_in(&encode_in(text, alphabet), alphabet),
+                text,
+                "{alphabet:?}"
+            );
+        }
+        // A code the alphabet has a letter for still decodes to that letter.
+        assert_eq!(decode_in("--.-", Alphabet::Greek), "Ψ");
+        assert_eq!(decode_in(".-", Alphabet::Hebrew), "א");
+    }
+
+    #[test]
+    fn native_letters_decode_exactly_as_listed() {
+        // Whatever else a decode table falls back to, the first letter an
+        // alphabet lists for a code is what that code decodes to.
+        for alphabet in Alphabet::ALL {
+            let table = &TABLES[&alphabet].decode;
+            let mut seen = std::collections::HashSet::new();
+            for &(letter, code) in alphabet.letters() {
+                if seen.insert(code) {
+                    assert_eq!(table[code], letter.to_string(), "{alphabet:?}: {code}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prosign_inside_a_word_is_sent_fused_within_that_word() {
+        assert_eq!(encode("SOS<SK>"), "... --- ... ...-.-");
+        assert_eq!(encode_lossy_report("SOS<SK>").skipped, vec![]);
+        assert_eq!(encode("<ar>K"), ".-.-. -.-");
+        assert_eq!(encode("A<BT>B<SK>"), ".- -...- -... ...-.-");
+        // What decode writes inline encodes back to the same Morse.
+        let morse = "... --- ... ...-.-";
+        assert_eq!(decode(morse), "SOS<SK>");
+        assert_eq!(encode(&decode(morse)), morse);
+        // An unknown or unterminated name is still letters, with the
+        // brackets reported.
+        let report = encode_lossy_report("A<ZZ>B");
+        assert_eq!(report.morse, ".- --.. --.. -...");
+        assert_eq!(report.skipped, vec!['<', '>']);
+        let report = encode_lossy_report("A<<SK>");
+        assert_eq!(report.morse, ".- ...-.-");
+        assert_eq!(report.skipped, vec!['<']);
+        assert_eq!(encode("<SK"), "... -.-");
+        assert_eq!(encode("SK>"), "... -.-");
+        // One letter gap separates the prosign from its neighbour.
+        assert_eq!(
+            build_signal_plan("E<AR>"),
+            vec![
+                Signal::Dot,
+                Signal::LetterGap,
+                Signal::Dot,
+                Signal::Dash,
+                Signal::Dot,
+                Signal::Dash,
+                Signal::Dot,
+            ]
+        );
+    }
+
+    #[test]
+    fn distress_and_error_prosigns() {
+        assert_eq!(encode("<SOS>"), "...---...");
+        assert_eq!(encode("<HH>"), "........");
+        assert_eq!(decode("...---..."), "<SOS>");
+        assert_eq!(decode("........"), "<HH>");
+        // Sent as letters, SOS keeps its letter gaps.
+        assert_eq!(encode("SOS"), "... --- ...");
+    }
+
+    #[test]
+    fn prosign_aliases_encode_like_the_canonical_name() {
+        for (alias, name) in [("VE", "SN"), ("KA", "CT"), ("VA", "SK")] {
+            let canonical = format!("<{name}>");
+            for written in [format!("<{alias}>"), format!("<{}>", alias.to_lowercase())] {
+                assert_eq!(encode(&written), encode(&canonical), "{written}");
+                assert_eq!(encode_lossy_report(&written).skipped, vec![]);
+                assert_eq!(decode(&encode(&written)), canonical, "{written}");
+            }
+            // The alias is the same sign: its letters, fused, are the code.
+            let fused: String = alias.chars().map(|c| encode(&c.to_string())).collect();
+            assert_eq!(fused, encode(&canonical), "{alias}");
+        }
+    }
+
+    #[test]
+    fn multiplication_sign_is_sent_as_x() {
+        let report = encode_lossy_report("3×4");
+        assert_eq!(report.morse, "...-- -..- ....-");
+        assert_eq!(report.skipped, vec![]);
+        assert_eq!(decode(&report.morse), "3X4");
+        assert_eq!(encode_in("×", Alphabet::Cyrillic), "-..-");
+    }
+
+    #[test]
+    fn percent_is_sent_as_zero_fraction_bar_zero() {
+        // ITU-R M.1677-1 part I, 3.3: % is sent 0/0, and a number is
+        // joined to it by a hyphen (2% is 2-0/0, not 20/0).
+        assert_eq!(encode("%"), encode("0/0"));
+        assert_eq!(encode("2%"), encode("2-0/0"));
+        assert_eq!(encode("12.5%"), encode("12.5-0/0"));
+        assert_eq!(encode("٥%"), encode("5-0/0"));
+        assert_eq!(encode("2 %"), encode("2 0/0"));
+        assert_eq!(encode("A%"), encode("A0/0"));
+        assert_eq!(encode("%%"), encode("0/00/0"));
+        assert_eq!(encode_lossy_report("2% A%").skipped, vec![]);
+        assert_eq!(decode(&encode("50%")), "50-0/0");
+        assert_eq!(build_signal_plan("2%"), build_signal_plan("2-0/0"));
+        assert_eq!(
+            encode_in("2%", Alphabet::Cyrillic),
+            encode_in("2-0/0", Alphabet::Cyrillic)
+        );
+    }
+
+    #[test]
+    fn arabic_teh_marbuta_is_sent_as_heh() {
+        let report = encode_lossy_report_in("مدرسة", Alphabet::Arabic);
+        assert_eq!(report.morse, encode_in("مدرسه", Alphabet::Arabic));
+        assert_eq!(report.skipped, vec![]);
+        assert_eq!(encode("ة"), "..-..");
+    }
+
+    #[test]
+    fn zero_width_non_joiner_is_ignored() {
+        let text = "می\u{200C}خواهم";
+        assert_eq!(Alphabet::detect(text), Alphabet::Persian);
+        let report = encode_lossy_report(text);
+        assert_eq!(report.skipped, vec![]);
+        // Not a letter, and not a word break either.
+        assert_eq!(report.morse, encode("میخواهم"));
+        assert!(!report.morse.contains('/'));
+        let report = encode_lossy_report("A\u{200C}B \u{200C}");
+        assert_eq!(report.morse, ".- -...");
+        assert_eq!(report.skipped, vec![]);
+        assert_eq!(build_signal_plan(text), build_signal_plan("میخواهم"));
+    }
+
+    #[test]
+    fn latin_text_with_cjk_punctuation_keeps_latin_codes() {
+        // An ideographic space is a word break, not a reason to send the
+        // brackets with their Wabun codes.
+        assert_eq!(encode("HELLO\u{3000}(1)"), encode("HELLO (1)"));
+        assert_eq!(
+            encode("こんにちは。"),
+            encode_in("こんにちは。", Alphabet::Japanese)
+        );
+    }
+
+    #[test]
+    fn decode_report_lists_unknown_codes_in_order() {
+        let report = decode_lossy_report("... --- ... ..--..-- / hello / .- ..--..--");
+        assert_eq!(report.text, "SOS A");
+        assert_eq!(report.skipped, vec!["..--..--", "hello", "..--..--"]);
+        // Codes are reported as read, after look-alikes are rewritten.
+        assert_eq!(decode_lossy_report("·−·−·−·−").skipped, vec![".-.-.-.-"]);
+    }
+
+    #[test]
+    fn decode_report_is_empty_when_every_code_is_recognised() {
+        for (morse, alphabet) in [
+            ("... --- ...", Alphabet::Latin),
+            ("... --- ... / ...-.-", Alphabet::Latin),
+            ("··· −−− ··· | ..--", Alphabet::Latin),
+            ("", Alphabet::Latin),
+            (" / ", Alphabet::Latin),
+            (".--. .-. .. .-- . -", Alphabet::Cyrillic),
+            (".-.. ..", Alphabet::Japanese),
+        ] {
+            let report = decode_lossy_report_in(morse, alphabet);
+            assert_eq!(report.skipped, Vec::<String>::new(), "{morse:?}");
+            assert_eq!(report.text, decode_in(morse, alphabet));
+        }
+        assert_eq!(decode_lossy_report("...").text, decode("..."));
+    }
+
+    #[test]
+    fn decode_report_depends_on_the_alphabet() {
+        // `..--` is Ü in Latin and Ю in Cyrillic, and nothing in Greek.
+        assert_eq!(decode_lossy_report("..--").skipped, Vec::<String>::new());
+        assert_eq!(
+            decode_lossy_report_in("..--", Alphabet::Cyrillic).skipped,
+            Vec::<String>::new()
+        );
+        let report = decode_lossy_report_in(".- ..--", Alphabet::Greek);
+        assert_eq!(report.text, "Α");
+        assert_eq!(report.skipped, vec!["..--"]);
+    }
+
+    #[test]
+    fn every_code_is_only_dots_and_dashes() {
+        // So none of the look-alikes decode rewrites can be part of a code.
+        let is_code = |code: &str| !code.is_empty() && code.chars().all(|s| s == '.' || s == '-');
+        for alphabet in Alphabet::ALL {
+            let tables = &TABLES[&alphabet];
+            for (c, code) in &tables.encode {
+                assert!(is_code(code), "{alphabet:?}: {c} -> {code}");
+            }
+            for code in tables.decode.keys() {
+                assert!(is_code(code), "{alphabet:?}: {code}");
+            }
+        }
+        for (name, code) in PROSIGNS.iter() {
+            assert!(is_code(code), "<{name}>: {code}");
+        }
+    }
+
+    #[test]
+    fn latin_decode_extensions_use_codes_nothing_else_does() {
+        let mut seen = std::collections::HashSet::new();
+        for &(code, text) in alphabets::LATIN_DECODE_EXTENSIONS {
+            assert!(seen.insert(code), "{code} is listed twice");
+            assert!(
+                !TABLE.values().any(|used| *used == code),
+                "{text}: {code} is in the ASCII table"
+            );
+            assert!(
+                !REVERSE_PROSIGNS.contains_key(code),
+                "{text}: {code} is a prosign"
+            );
+            // The code is one an accented letter is sent with: the letter
+            // itself, except for the digraph CH.
+            assert!(
+                alphabets::LATIN_EXTENSIONS
+                    .iter()
+                    .any(|&(_, extension)| extension == code),
+                "{text}: {code}"
+            );
+            if text != "CH" {
+                assert_eq!(encode(text), code, "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn prosign_names_fuse_into_their_codes() {
+        let fused = |name: &str| -> String { name.chars().map(|c| TABLE[&c]).collect() };
+        for (&name, &code) in PROSIGNS.iter() {
+            assert_eq!(fused(name), code, "<{name}>");
+            assert!(name.len() <= PROSIGN_NAME_MAX, "<{name}>");
+        }
+        // No two names share a code, so decode's choice of name is fixed.
+        assert_eq!(REVERSE_PROSIGNS.len(), PROSIGNS.len());
+        for &(alias, name) in PROSIGN_ALIASES {
+            assert!(!PROSIGNS.contains_key(alias), "<{alias}>");
+            assert_eq!(fused(alias), PROSIGNS[name], "<{alias}> is not <{name}>");
+            assert!(alias.len() <= PROSIGN_NAME_MAX, "<{alias}>");
+        }
+    }
+
+    #[test]
+    fn every_decodable_letter_round_trips() {
+        // Everything a decode table can produce must encode back to the
+        // code it came from, and decode to itself again. The exceptions
+        // are by design: Hebrew writes כ מ נ פ צ in their final form at
+        // the end of a word, and a lone letter is a word; CH is sent as
+        // the two letters C and H, not with its own code.
+        let expected: &[(Alphabet, &str, &str, &str)] = &[
+            (Alphabet::Latin, "----", "CH", "-.-. ...."),
+            (Alphabet::Hebrew, "-.-", "כ", "ך"),
+            (Alphabet::Hebrew, "--", "מ", "ם"),
+            (Alphabet::Hebrew, "-.", "נ", "ן"),
+            (Alphabet::Hebrew, ".--.", "פ", "ף"),
+            (Alphabet::Hebrew, ".--", "צ", "ץ"),
+        ];
+        let mut found: Vec<(Alphabet, &str, &str, String)> = Vec::new();
+        let mut checked = 0;
+        for alphabet in Alphabet::ALL {
+            let mut entries: Vec<(&str, &str)> = TABLES[&alphabet]
+                .decode
+                .iter()
+                .map(|(&code, text)| (code, text.as_str()))
+                .collect();
+            entries.sort();
+            for (code, text) in entries {
+                checked += 1;
+                let encoded = encode_in(text, alphabet);
+                let decoded = decode_in(&encoded, alphabet);
+                if encoded != code {
+                    found.push((alphabet, code, text, encoded));
+                } else if decoded != text {
+                    found.push((alphabet, code, text, decoded));
+                }
+                // The code itself always decodes to the table entry or,
+                // in Hebrew, its final form.
+                let direct = decode_in(code, alphabet);
+                assert!(
+                    direct == text || alphabet == Alphabet::Hebrew,
+                    "{alphabet:?}: {code} decoded to {direct}, not {text}"
+                );
+            }
+        }
+        let expected: Vec<(Alphabet, &str, &str, String)> = expected
+            .iter()
+            .map(|&(alphabet, code, text, result)| (alphabet, code, text, result.to_string()))
+            .collect();
+        let sort = |mut list: Vec<(Alphabet, &'static str, &'static str, String)>| {
+            list.sort_by(|a, b| (a.0.id(), a.1).cmp(&(b.0.id(), b.1)));
+            list
+        };
+        assert_eq!(sort(found), sort(expected));
+        // 54 shared characters in each of the 8 alphabets, at the least.
+        assert!(checked >= 8 * 54, "only {checked} entries checked");
+    }
+
+    #[test]
+    fn no_scalar_value_panics_in_any_alphabet() {
+        // Every scalar value in one text, so that marks and joiners meet a
+        // preceding character, and the basic plane (which holds every
+        // table) again with each character a word of its own.
+        let all: String = ('\0'..=char::MAX).collect();
+        let words: String = ('\0'..='\u{FFFF}').flat_map(|c| [c, ' ']).collect();
+        // Accented-Latin codes with no canonical letter to decode to.
+        let undecoded = [
+            "-.-..", "..--.", ".-..-", "--.-.", ".---.", "...-...", ".--..", "--..-.", "--..-",
+        ];
+        std::thread::scope(|scope| {
+            for alphabet in Alphabet::ALL {
+                let (all, words) = (&all, &words);
+                scope.spawn(move || {
+                    for text in [all, words] {
+                        let report = encode_lossy_report_in(text, alphabet);
+                        assert!(
+                            report
+                                .morse
+                                .chars()
+                                .all(|s| matches!(s, '.' | '-' | ' ' | '/')),
+                            "{alphabet:?}"
+                        );
+                        // Whatever encode sends, decode recognises.
+                        let mut skipped = decode_lossy_report_in(&report.morse, alphabet).skipped;
+                        skipped.retain(|code| {
+                            alphabet != Alphabet::Latin || !undecoded.contains(&code.as_str())
+                        });
+                        assert_eq!(skipped, Vec::<String>::new(), "{alphabet:?}");
+                        // Text handed to decode by mistake is survivable.
+                        decode_lossy_report_in(text, alphabet);
+                    }
+                    build_signal_plan_in(words, alphabet);
+                });
+            }
+        });
     }
 }

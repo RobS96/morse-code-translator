@@ -30,17 +30,32 @@ macOS and Windows need no extra system packages.
 
 ## Before opening a PR
 
-Run the same checks CI runs, in one line:
+Run the checks CI runs on your code, in one line:
 
 ```bash
-cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
+cargo fmt --all --check && cargo clippy --locked --workspace --all-targets -- -D warnings && cargo test --locked --workspace
 ```
+
+CI also runs these, which matter mostly when dependencies change:
+
+- **`cargo deny check`** and **`cargo vet check --locked`** (install with
+  `cargo install --locked cargo-deny cargo-vet`). A new or updated
+  dependency fails `cargo vet` until it is covered by an audit or an
+  exemption in `supply-chain/`; say in the PR why the dependency is needed
+  and a maintainer will handle that part.
+- **Minimum supported Rust**: `morse-core` and `morse-cli` must build on
+  Rust 1.88, `morse-gui` on 1.95. Avoid newer language or standard-library
+  features, or raise `rust-version` in the same PR and say why.
+- **Packaging**: the release archives are built on every PR, so a change
+  that breaks them shows up there.
 
 - **New behavior** → add a unit test in `morse-core/src/lib.rs` (see the
   `#[cfg(test)] mod tests` block for the pattern).
 - **Bug fix** → add a regression test that fails before your fix and
   passes after.
 - **Public API change** → update doc comments (`///`) and `README.md`.
+- **New GUI text** → a new `Msg` variant in `morse-gui/src/i18n.rs` needs a
+  string in each of the 12 languages; the tests there fail on a missing one.
 
 ## Commit / PR conventions
 

@@ -17,7 +17,8 @@
 /// alphabet (Japanese overrides a few punctuation codes with its own).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Alphabet {
-    /// International (ITU) Latin, plus accented-letter extensions on encode.
+    /// International (ITU) Latin, plus accented-letter extensions: all of
+    /// them on encode, one letter per unambiguous code on decode.
     Latin,
     /// Russian national standard, plus Ukrainian І/Є/Ї and Bulgarian Ъ.
     Cyrillic,
@@ -91,6 +92,8 @@ impl Alphabet {
     /// Guess the alphabet from the first letter of a recognised script.
     /// Arabic-script text is treated as Persian only if it contains a
     /// Persian-only letter (پ چ ژ گ ک ی). Text with no such letter is Latin.
+    /// CJK punctuation (U+3000..=U+303F, ideographic space included) is
+    /// common to several scripts and does not count as a letter.
     pub fn detect(text: &str) -> Alphabet {
         let persian_only = ['پ', 'چ', 'ژ', 'گ', 'ک', 'ی'];
         for c in text.chars() {
@@ -105,9 +108,7 @@ impl Alphabet {
                         Alphabet::Arabic
                     }
                 }
-                0x3040..=0x30FF | 0x3000..=0x303F | 0xFF08 | 0xFF09 | 0xFF61..=0xFF9F => {
-                    Alphabet::Japanese
-                }
+                0x3040..=0x30FF | 0xFF08 | 0xFF09 | 0xFF61..=0xFF9F => Alphabet::Japanese,
                 0x1100..=0x11FF | 0x3130..=0x318F | 0xAC00..=0xD7A3 => Alphabet::Korean,
                 _ => continue,
             };
@@ -141,7 +142,7 @@ impl Alphabet {
                 ('Ύ', 'Υ'), ('Ώ', 'Ω'), ('Ϊ', 'Ι'), ('Ϋ', 'Υ'),
             ],
             Alphabet::Hebrew => &[('ך', 'כ'), ('ם', 'מ'), ('ן', 'נ'), ('ף', 'פ'), ('ץ', 'צ')],
-            Alphabet::Arabic => &[('أ', 'ا'), ('إ', 'ا'), ('آ', 'ا'), ('ٱ', 'ا'), ('ى', 'ي'), ('ؤ', 'و'), ('ئ', 'ي')],
+            Alphabet::Arabic => &[('أ', 'ا'), ('إ', 'ا'), ('آ', 'ا'), ('ٱ', 'ا'), ('ى', 'ي'), ('ؤ', 'و'), ('ئ', 'ي'), ('ة', 'ه')],
             Alphabet::Persian => &[('أ', 'ا'), ('إ', 'ا'), ('آ', 'ا'), ('ي', 'ی'), ('ك', 'ک')],
             Alphabet::Japanese => &[
                 ('ぁ', 'あ'), ('ぃ', 'い'), ('ぅ', 'う'), ('ぇ', 'え'), ('ぉ', 'お'),
@@ -153,7 +154,8 @@ impl Alphabet {
     }
 }
 
-/// Accented Latin letters (encode only: most share a code, e.g. Ä/Æ/Ą).
+/// Accented Latin letters, for encode. Most share a code (Ä/Æ/Ą), so
+/// decode knows only [`LATIN_DECODE_EXTENSIONS`].
 #[rustfmt::skip]
 pub(crate) const LATIN_EXTENSIONS: &[(char, &str)] = &[
     ('À', ".--.-"), ('Å', ".--.-"), ('Ä', ".-.-"), ('Æ', ".-.-"), ('Ą', ".-.-"),
@@ -162,6 +164,18 @@ pub(crate) const LATIN_EXTENSIONS: &[(char, &str)] = &[
     ('Ĥ', "----"), ('Š', "----"), ('Ĵ', ".---."), ('Ń', "--.--"), ('Ñ', "--.--"),
     ('Ó', "---."), ('Ö', "---."), ('Ø', "---."), ('Ś', "...-..."), ('Ŝ', "...-."),
     ('Þ', ".--.."), ('Ü', "..--"), ('Ŭ', "..--"), ('Ź', "--..-."), ('Ż', "--..-"),
+];
+
+/// What an extension code decodes to in the Latin alphabet: one canonical
+/// letter where several share the code, and only codes that no ASCII
+/// character or prosign uses. `----` is the digraph CH, which has no
+/// character of its own. `...-.` (Ŝ) is not here: it is the prosign SN.
+#[rustfmt::skip]
+pub(crate) const LATIN_DECODE_EXTENSIONS: &[(&str, &str)] = &[
+    ("..--", "Ü"), ("---.", "Ö"), (".-.-", "Ä"), ("--.--", "Ñ"), ("----", "CH"),
+    (".--.-", "Å"), ("..-..", "É"), ("-.-..", "Ç"), (".-..-", "È"), ("..--.", "Ð"),
+    ("--.-.", "Ĝ"), (".---.", "Ĵ"), ("...-...", "Ś"), (".--..", "Þ"), ("--..-.", "Ź"),
+    ("--..-", "Ż"),
 ];
 
 #[rustfmt::skip]
@@ -366,6 +380,8 @@ fn voiced_kana(base: char, mark: char) -> Option<char> {
 ///   U+1161..=U+1175, finals U+11A8..=U+11C2) -> compatibility jamo, with
 ///   double and compound jamo written as their component letters, exactly
 ///   as precomposed syllables are sent.
+/// - The zero-width non-joiner (U+200C), which Persian writes inside words,
+///   is removed: it is neither a letter nor a word break.
 ///
 /// Not covered (such characters pass through unchanged, and the encoder
 /// drops and reports whatever has no code):
@@ -417,6 +433,7 @@ pub fn normalize_input(text: &str) -> String {
             0x1161..=0x1175 => out.extend(MEDIALS[(cp - 0x1161) as usize].chars()),
             // FINALS[0] is "no final consonant", so U+11A8 is index 1.
             0x11A8..=0x11C2 => out.extend(FINALS[(cp - 0x11A8 + 1) as usize].chars()),
+            0x200C => {}
             _ => out.push(c),
         }
     }
@@ -535,6 +552,19 @@ mod tests {
     }
 
     #[test]
+    fn cjk_punctuation_alone_does_not_select_japanese() {
+        // U+3000..=U+303F is shared by Chinese, Japanese and Korean text,
+        // and an ideographic space turns up in otherwise Latin text.
+        assert_eq!(Alphabet::detect("HELLO\u{3000}(WORLD)"), Alphabet::Latin);
+        assert_eq!(Alphabet::detect("、。"), Alphabet::Latin);
+        assert_eq!(Alphabet::detect("привет\u{3000}мир"), Alphabet::Cyrillic);
+        // Kana still decide, wherever the punctuation sits.
+        assert_eq!(Alphabet::detect("こんにちは。"), Alphabet::Japanese);
+        assert_eq!(Alphabet::detect("「こんにちは」"), Alphabet::Japanese);
+        assert_eq!(Alphabet::detect("\u{3000}한글"), Alphabet::Korean);
+    }
+
+    #[test]
     fn hangul_decomposes_into_sent_jamo() {
         // 한 = ㅎ + ㅏ + ㄴ; 괜 = ㄱ + ㅗㅐ + ㄴ; 까 = ㄱㄱ + ㅏ.
         assert_eq!(decompose_hangul('한').unwrap(), vec!['ㅎ', 'ㅏ', 'ㄴ']);
@@ -624,6 +654,14 @@ mod tests {
         // Archaic jamo and fillers are not covered.
         assert_eq!(normalize_input("\u{1113}\u{1160}"), "\u{1113}\u{1160}");
         assert_eq!(normalize_input("\u{11A7}\u{11C3}"), "\u{11A7}\u{11C3}");
+    }
+
+    #[test]
+    fn normalize_drops_zero_width_non_joiners() {
+        assert_eq!(normalize_input("می\u{200C}خواهم"), "میخواهم");
+        assert_eq!(normalize_input("\u{200C}A\u{200C}\u{200C}B\u{200C}"), "AB");
+        // Its neighbours are not touched, the zero-width joiner included.
+        assert_eq!(normalize_input("A\u{200B}\u{200D}B"), "A\u{200B}\u{200D}B");
     }
 
     #[test]

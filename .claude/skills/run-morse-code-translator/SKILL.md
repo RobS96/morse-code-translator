@@ -59,7 +59,9 @@ morse-core smoke OK: SOS -> ... --- ... -> SOS, plan len 2
 Public API used: `morse_core::encode`, `decode`, `build_signal_plan`. Also
 public: `encode_in` / `decode_in` / `build_signal_plan_in` (explicit
 alphabet), `encode_lossy_report` (output plus the characters that were
-dropped) and `normalize_input`.
+dropped), `normalize_input`, `build_schedule` (a plan laid out as timed
+tones and silences), `render_samples` (the schedule as PCM samples) and
+`write_wav`.
 
 ### `morse-cli` (binary `morse`)
 
@@ -71,12 +73,13 @@ target/debug/morse encode "SOS"              # ... --- ...
 target/debug/morse decode "... --- ..."      # SOS
 target/debug/morse decode ".-" -a cyrillic   # А
 target/debug/morse transmit "HELLO" -u 80    # flashes/beeps in the terminal, blocks until done
+target/debug/morse wav "HELLO" -o "$SHOT_DIR/hello.wav" --force   # 16-bit mono WAV; without --force an existing file is exit 3
 target/debug/morse encode "A ~ B"            # .- / -... on stdout, a warning naming ~ on stderr
 ```
 
 ### `morse-gui` (binary `morse-gui`)
 
-Real native window (`eframe`, 480×420 default size), driven with
+Real native window (`eframe`, 520×720 default size), driven with
 `osascript`/System Events + `cliclick` + `screencapture`. `smoke-gui` launches
 it, repositions the window to logical `(60, 60)` (see Gotchas — this step is
 not optional), and screenshots the default state (input `SOS`, result
@@ -103,9 +106,12 @@ zsh .claude/skills/run-morse-code-translator/driver.sh test
 
 Unit tests live in all three crates: `morse-core` (encode/decode round trips
 per alphabet, input normalisation, dropped-character reporting, code
-collisions, signal timing), `morse-cli` (argument parsing and validation)
-and `morse-gui` (interface translations). `cargo test --workspace` prints one
-`test result:` line per crate; all should read `0 failed`.
+collisions, signal timing, the keying schedule, audio rendering and the WAV
+writer), `morse-cli` (argument parsing and validation, plus end-to-end runs
+of the binary in `morse-cli/tests/`) and `morse-gui` (interface
+translations, and the transmission logic that needs no window or sound
+card). `cargo test --workspace` prints one `test result:` line per test
+binary; all should read `0 failed`.
 
 ## Gotchas
 

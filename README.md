@@ -22,7 +22,7 @@ Dash = long flash/beep   (3 units)
 | Crate        | What it is                                                        |
 | ------------ | ------------------------------------------------------------------ |
 | `morse-core` | Pure encode/decode/timing logic. No I/O — fully unit tested.      |
-| `morse-cli`  | Terminal tool: `encode`, `decode`, `transmit` (bell + ANSI flash). |
+| `morse-cli`  | Terminal tool: `encode`, `decode`, `transmit` (bell + ANSI flash), `wav` (audio file). |
 | `morse-gui`  | Native desktop app (eframe/egui): live lamp + audible tone.        |
 
 ```
@@ -71,17 +71,45 @@ Linux under
 [Releases](https://github.com/RobS96/morse-code-translator/releases) —
 no Rust toolchain needed. Each archive carries a CycloneDX SBOM per crate
 under `sbom/`, and each platform has a `SHA256SUMS-<platform>.txt` beside
-it. To check a download:
+it. To check a download, run these in the folder holding the archive and
+its checksum file:
 
 ```bash
-sha256sum -c SHA256SUMS-linux-x86_64.txt      # shasum -a 256 -c on macOS
-gh attestation verify morse-*.tar.gz --repo RobS96/morse-code-translator
+# Linux
+sha256sum -c SHA256SUMS-linux-x86_64.txt
+# macOS
+shasum -a 256 -c SHA256SUMS-macos-universal.txt
 ```
+
+```powershell
+# Windows: compare with the hash in SHA256SUMS-windows-x86_64.txt
+Get-FileHash .\morse-*-windows-x86_64.zip -Algorithm SHA256
+```
+
+On any platform, [GitHub CLI](https://cli.github.com) can confirm the
+archive was built by this repository's release workflow:
+
+```bash
+gh attestation verify <archive> --repo RobS96/morse-code-translator
+```
+
+Things to know before running a downloaded binary:
+
+- **macOS:** the binaries are not signed with an Apple Developer ID or
+  notarised, and there is no `.app` bundle. Gatekeeper blocks them when
+  they carry the quarantine flag a browser download adds; after verifying
+  the archive as above, clear it with
+  `xattr -d com.apple.quarantine morse morse-gui`.
+- **Linux:** the binaries are built on GitHub's current Ubuntu runner and
+  need a glibc at least as new as that release's. On an older distribution,
+  build from source. `morse-gui` also needs the X11/xkbcommon, OpenGL and
+  ALSA runtime libraries, which desktop installs already have.
+- **Windows:** SmartScreen may warn about an unsigned download.
 
 Alternatively, install just the CLI straight from a clone:
 
 ```bash
-cargo install --path morse-cli
+cargo install --locked --path morse-cli
 ```
 
 ## Usage — CLI
@@ -89,9 +117,11 @@ cargo install --path morse-cli
 ```bash
 morse encode "SOS"                 # -> ... --- ...
 morse decode "... --- ..."         # -> SOS
+echo "SOS" | morse encode          # no text argument: read it from stdin
 morse transmit "HELLO WORLD"       # flashes + beeps it live in your terminal
 morse transmit "SOS" --wpm 25      # faster: 25 words-per-minute
 morse transmit "SOS" -u 60         # or set the raw unit length directly (ms)
+morse wav "SOS" -o sos.wav         # the same Morse as a WAV audio file
 morse --help                       # every option
 morse --version
 ```
@@ -103,14 +133,34 @@ so it arrives as one argument. Morse that starts with a dash (`morse decode
 with its value missing, or a second piece of text is a usage error (exit
 code 1).
 
+With no text argument, the text is read from standard input, unless that is
+a terminal. A terminal, or standard input with nothing on it, is the usual
+`missing text` usage error. `-` is not a stand-in for standard input: it is
+the Morse for T.
+
 Characters with no Morse code are left out, and a word made up only of such
 characters is left out whole, so `morse encode "A ~ B"` prints `.- / -...`.
-`encode` and `transmit` then name what was left out on stderr, without
-changing the exit code:
+`decode` does the same with codes it does not recognise. Each command then
+names what was left out on stderr:
 
 ```
 morse: warning: left out 1 character with no Morse code: '~' (U+007E)
+morse: warning: left out 1 code not recognised in the latin alphabet: "..--..--"
 ```
+
+That does not change the exit code unless you pass `--strict` to `encode`,
+`decode` or `wav`; the translation is printed (or the file written) either
+way.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | Success |
+| 1 | Usage error; the usage text follows the message on stderr |
+| 2 | `--strict` was given and something was left out |
+| 3 | Standard input could not be read (it must be UTF-8), or the output or the WAV file could not be written |
+
+Output that is closed early, as in `morse transmit "CQ" | head -1`, ends the
+program quietly with exit code 0.
 
 Multi-word Morse uses `/` as the word separator:
 
@@ -118,15 +168,28 @@ Multi-word Morse uses `/` as the word separator:
 morse decode ".... .. / - .... . .-. ."   # -> HI THERE
 ```
 
+`decode` also reads the look-alike characters that typeset Morse and
+autocorrect put in place of dots and dashes: `·` and `•` as a dot; `−`
+(minus), `–`, `—` and `_` as a dash; `…` as three dots; and `|` as the word
+separator. Each long dash counts as **one** dash. If your editor's "smart
+dashes" turned a typed `--` into a single `—`, that information is gone and
+the result will be wrong: turn smart punctuation off when typing Morse.
+
 **Procedural signs ("prosigns").** Common ham-radio prosigns — `<AR>`
 (end of message), `<SK>` (end of contact), `<BT>` (new paragraph/break),
 `<KN>` (over to a specific station), `<AS>` (wait), `<CT>` (start
-copying), `<BK>`, `<SN>` — encode as a single fused character with no
-inter-letter gap, matching how they're actually sent on the air:
+copying), `<BK>`, `<SN>`, `<HH>` (error, eight dots) and `<SOS>` — encode
+as a single fused character with no inter-letter gap, matching how they're
+actually sent on the air:
 
 ```bash
 morse encode "CQ CQ DE W1AW <KN>"
 ```
+
+`<VE>`, `<KA>` and `<VA>` are accepted as other spellings of `<SN>`, `<CT>`
+and `<SK>` (the same codes); `decode` writes the latter. A prosign can sit
+inside a word, as in `SOS<SK>`, which is also how `decode` writes one that
+follows a letter with no word gap between them.
 
 > Some prosigns (`AR`, `AS`, `BT`, `KN`) happen to share their fused code
 > with an existing punctuation mark (`+`, `&`, `=`, `(`) — that's real
@@ -144,8 +207,33 @@ without encouraging you to count dits and dahs:
 morse transmit "PARIS" --wpm 20 --farnsworth-wpm 5   # 20 WPM characters, 5 WPM overall
 ```
 
+`--wpm` and `--farnsworth-wpm` take a speed from 1 to 100 WPM.
 `--farnsworth-wpm` may not be higher than the character speed (`--wpm`, or
 the speed `-u` works out to, or the default 12 WPM); that is a usage error.
+So is a raw gap unit (`-g`) shorter than the character unit, and so is
+giving both options of a pair that set the same thing: `--wpm` with `-u`,
+or `--farnsworth-wpm` with `-g`.
+
+**WAV files.** `morse wav` writes the transmission as audio instead of
+flashing it, with the same timing options and the same checks on them:
+
+```bash
+morse wav "PARIS PARIS" -o paris.wav --wpm 20 --farnsworth-wpm 10 --tone 700
+```
+
+The file is 16-bit mono PCM at 44100 Hz. It starts with the first tone and
+ends with the last, and every tone fades in and out over 5 ms so the keying
+does not click. `--tone` sets the pitch (20 to 20000 Hz, default 600) and
+`--volume` the peak level (0 to 1, default 0.2).
+
+`-o` is required and takes a file path; `-o -` is not standard output. A
+file that already exists is left alone (exit code 3) unless you pass
+`--force`. The audio goes to a temporary file next to the target, which is
+moved into place once complete, so a run that fails leaves no partial file.
+Characters with no Morse code are left out and named on stderr as for
+`encode`, and `--strict` turns that into exit code 2; the file is written
+either way. One file holds at most 172.8 million samples, about 65 minutes;
+a longer transmission is refused (exit code 3).
 
 ## Alphabets
 
@@ -159,13 +247,19 @@ accepted too.
 | | Encode (text → Morse) | Decode (Morse → text) |
 |---|---|---|
 | Alphabet choice | Detected from the text; override with `--alphabet` | `--alphabet`, default `latin`: the same dots and dashes mean different letters in each alphabet |
-| Normalisation | Lowercase, Greek tonos, Hebrew final letters, Ё, katakana, small kana, voiced kana (が → か + ゛) and Hangul syllables (한 → ㅎㅏㄴ) are all accepted | Hebrew final forms are restored at word ends and voiced kana are recomposed; Korean comes back as jamo, because regrouping jamo into syllables is ambiguous |
-| Accented Latin (Ä, Ñ, Ś, …) | Encoded with their extension codes | Decoded as plain ASCII: most extension codes are shared (Ä/Æ/Ą) or collide with prosigns |
+| Normalisation | Lowercase, Greek tonos, Hebrew final letters, Ё, Arabic ة (sent as ه), katakana, small kana, voiced kana (が → か + ゛) and Hangul syllables (한 → ㅎㅏㄴ) are all accepted | Hebrew final forms are restored at word ends and voiced kana are recomposed; Korean comes back as jamo, because regrouping jamo into syllables is ambiguous |
+| Accented Latin (Ä, Ñ, Ś, …) | Encoded with their extension codes | Each extension code decodes to one letter: `.-.-` Ä, `.--.-` Å, `-.-..` Ç, `----` CH, `..--.` Ð, `..-..` É, `.-..-` È, `--.-.` Ĝ, `.---.` Ĵ, `--.--` Ñ, `---.` Ö, `...-...` Ś, `.--..` Þ, `..--` Ü, `--..-.` Ź, `--..-` Ż. Letters that share a code come back as the one listed (Æ and Ą as Ä, Ł as È). `...-.` is the prosign `<SN>`, so Ŝ does not round-trip |
+| Latin letters in another alphabet | Always accepted (`QTH Москва`) | Decoded only where the alphabet has no letter of its own for the code (J, U and V in Greek); otherwise the alphabet's letter wins |
+| `×` and `%` | Per ITU-R M.1677-1, `×` is sent as X and `%` as `0/0`, joined to a number before it by a hyphen (`2%` → `2-0/0`) | Read back as sent: `X`, `2-0/0` |
 
 Arabic and Persian share letters but not codes (خ is `---` in Arabic and
 `-..-` in Persian). Text containing a Persian-only letter (پ چ ژ گ ک ی)
 is detected as Persian; anything else in Arabic script is detected as
 Arabic. Pass `-a persian` or `-a arabic` to be explicit.
+
+Kana make text Japanese. CJK punctuation on its own (an ideographic space,
+`、`, `。`) does not, since other scripts use it too; pass `-a japanese` to
+send such text with the Wabun codes.
 
 ```bash
 morse alphabets                                        # list them
@@ -192,6 +286,7 @@ encoder rewrites the common cases before looking anything up
 | Kana + combining dakuten/handakuten (U+3099, U+309A) | The precomposed kana (か + U+3099 → が); where none exists, the kana followed by a spacing ゛ or ゜ |
 | Half-width katakana and punctuation (U+FF61–U+FF9F) | Full-width, voiced marks combined (ｶﾞ → ガ) |
 | Hangul conjoining jamo (U+1100–U+1112, U+1161–U+1175, U+11A8–U+11C2) | Compatibility jamo, double and compound jamo as their component letters |
+| Zero-width non-joiner (U+200C), written inside Persian words | Removed: neither a letter nor a word break |
 
 This is a hand-written subset, not full Unicode normalisation. Not covered:
 other combining marks (decomposed accented Latin such as N + U+0303, Greek
@@ -239,7 +334,12 @@ cargo run --release -p morse-gui
 - Drag the **Character speed** slider (in WPM); tick **Farnsworth
   timing** to reveal a second, slower **Effective speed** slider for the
   letter/word gaps.
-- Hit **▶ Transmit** — the lamp flashes and a tone plays in sync.
+- Hit **▶ Transmit** — the lamp flashes and a tone plays in sync. **⏹ Stop**
+  ends it early. The **Tone** (300 to 1200 Hz) and **Volume** sliders apply
+  from the next transmission. With no sound output available, the lamp
+  still flashes and the status line says so.
+- Characters with no Morse code, and codes that are not recognised, are
+  left out of the result and listed in the status line under the lamp.
 - Pick the **Alphabet** (auto-detected by default) and the interface
   **Language**: English, Español, Français, Deutsch, Italiano, Português,
   Русский, Українська, Ελληνικά, 日本語, 한국어 or 简体中文. The language

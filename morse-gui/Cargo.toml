@@ -27,8 +27,3 @@ eframe = { version = "0.36", default-features = false, features = [
     "x11",
 ] }
 rodio = { version = "0.22", default-features = false, features = ["playback"] }
-
-# eframe 0.24's Windows app-icon code uses winapi items without declaring
-# the features; declaring them here lets feature unification fix the build.
-[target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["winuser", "windef"] }

@@ -6,6 +6,117 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `morse wav [text] -o <file>` writes the transmission as a WAV file
+  (16-bit mono PCM, 44100 Hz), with the timing options of `transmit` and
+  the same checks on them, `--tone <Hz>` (20 to 20000, default 600) and
+  `--volume <0-1>` (default 0.2). Text comes from the argument or standard
+  input; dropped characters are warned about and `--strict` applies, as
+  for `encode`. An existing file is not replaced without `--force`, and
+  the file is written by way of a temporary file beside it, so a failed
+  run leaves nothing partial behind. `-o -` is not standard output.
+- `morse_core::build_schedule` lays a signal plan out in time as
+  `ScheduleStep { kind, duration_ms }` (`StepKind::Tone`, `SymbolGap`,
+  `LetterGap`, `WordGap`), with `schedule_duration_ms` for the total. It
+  is the one place the unit of silence between two symbols of a letter is
+  added; the CLI and the GUI each used to add it themselves.
+- `morse_core::render_samples` / `render_schedule` render a transmission
+  as mono `f32` PCM for a `Tone { frequency_hz, sample_rate, volume,
+  ramp_ms }`: sample-exact step lengths taken from cumulative time, and a
+  raised-cosine attack and release on every tone so the keying does not
+  click. Out-of-range or non-finite parameters, and a transmission over
+  `MAX_RENDER_SAMPLES`, are a `RenderError`. `morse_core::write_wav`
+  writes samples as a 16-bit mono WAV stream to any `io::Write`.
+- `morse-gui`: a **Stop** button, **Tone** (300 to 1200 Hz) and **Volume**
+  sliders, and a status-line list of what the translation left out
+  (characters with no Morse code, or codes that were not recognised), in
+  all 12 interface languages.
+- `morse_core::decode_lossy_report` / `decode_lossy_report_in` return the
+  text together with the codes that were dropped for not being recognised
+  (`DecodeReport { text, skipped }`). `morse decode` prints a one-line
+  warning on stderr naming them; it used to drop them silently.
+- `morse-cli`: `--strict` for `encode` and `decode` exits with code 2 when
+  anything was left out. The translation and the warning are still
+  printed.
+- `morse-cli` reads the text from standard input when no text argument is
+  given and standard input is not a terminal (`echo SOS | morse encode`).
+- `decode` reads common look-alike characters: `·` `•` as a dot, `−` `–`
+  `—` `_` as a dash, `…` as three dots and `|` as the word separator.
+- Accented Latin decodes: every extension code that nothing else uses
+  gives one letter (Ä, Å, Ç, CH, Ð, É, È, Ĝ, Ĵ, Ñ, Ö, Ś, Þ, Ü, Ź, Ż).
+  `MÜNCHEN` now round-trips; it used to come back as `MNCHEN`.
+- Decoding into a non-Latin alphabet gives the Latin letter for a code
+  the alphabet has no letter of its own for (J, U, V in Greek; F, V, X, Y
+  in Hebrew), instead of dropping it. Native letters are unaffected.
+- Prosigns `<SOS>` and `<HH>` (error, eight dots), and `<VE>`, `<KA>`,
+  `<VA>` as other spellings of `<SN>`, `<CT>`, `<SK>` on encode.
+- Per ITU-R M.1677-1, `×` is sent as X and `%` as `0/0`, joined to a
+  number before it by a hyphen (`2%` is `2-0/0`). Arabic ة is sent as ه.
+  The zero-width non-joiner (U+200C) is ignored instead of being reported
+  as a dropped character.
+
+### Changed
+
+- `morse-gui` renders the whole transmission once and plays it as one
+  buffer, with shaped tone edges instead of hard on/off keying, and the
+  lamp follows the same schedule against the clock instead of a chain of
+  sleeps, so the rhythm no longer drifts. With no sound output available
+  the lamp still runs and the status line says so (the failure used to be
+  silent).
+- `morse-gui`: the result box scrolls once it is a few lines tall, and
+  the Copy button sits beside the "Result" label. The window opens 100
+  pixels taller to make room for the new controls.
+- `morse transmit` takes its timing from `build_schedule`: it no longer
+  waits one more unit after the last symbol.
+- `morse-cli`: `-o`/`--output` and `--force` with a command other than
+  `wav` are usage errors.
+- `build_signal_plan` / `build_signal_plan_in` no longer end with a
+  `Signal::LetterGap`: the plan stops at the last dot or dash, so a
+  transmission no longer waits out a letter gap (seconds, at Farnsworth
+  speeds) after the final letter.
+- `morse-cli` usage errors (exit code 1) that used to be accepted: a
+  `-g` gap unit shorter than the character unit; `--wpm` or
+  `--farnsworth-wpm` outside 1 to 100 WPM; `--wpm` together with `-u`,
+  and `--farnsworth-wpm` together with `-g` (one of each pair used to be
+  ignored).
+- `morse-cli` exits with code 3 when standard input cannot be read or the
+  output cannot be written. The usage text names the program by its file
+  name rather than the path it was run by, and lists the exit codes.
+- `Alphabet::detect` no longer picks Japanese for text whose only
+  Japanese-looking characters are CJK punctuation (U+3000 to U+303F, such
+  as an ideographic space), so Latin text containing one keeps its Latin
+  bracket codes. Kana still select Japanese; `、。` alone need
+  `-a japanese`.
+
+### Fixed
+
+- `morse-gui` no longer prints rodio's "Dropping DeviceSink" notice to
+  stderr after every transmission.
+- `morse-gui`: the Transmit button can no longer stay disabled if the
+  transmit thread ends abnormally.
+- `morse-gui`: a long result no longer pushes the controls below it out
+  of the window.
+- `morse-gui` release builds for Windows no longer open a console window.
+- `morse-cli` no longer panics (exit code 101) when its output is closed
+  early, as in `morse encode "SOS" | true` or `morse transmit ... | head
+  -1`: it stops quietly with exit code 0. A closed stderr no longer
+  panics either.
+- `morse-cli` no longer panics on an argument that is not valid UTF-8; it
+  is a usage error.
+- A prosign inside a word is sent fused (`SOS<SK>`), so what `decode`
+  writes for a prosign that follows a letter encodes back to the same
+  Morse. It used to be sent letter by letter with the brackets dropped.
+- `decode` no longer leaves a double space where a word is empty or
+  wholly unrecognised: `decode(".- // -...")` is `A B`.
+
+### Removed
+
+- `morse-gui` no longer depends on `winapi` on Windows. It was a
+  workaround for `eframe` 0.24, which `eframe` 0.36 (on `windows-sys`)
+  does not need; `winapi` and its two `*-pc-windows-gnu` import-library
+  crates are gone from `Cargo.lock`.
+
 ## [0.3.0] - 2026-09-29
 
 ### Added
