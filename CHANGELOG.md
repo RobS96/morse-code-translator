@@ -6,6 +6,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-02
+
 ### Added
 
 - `morse wav [text] -o <file>` writes the transmission as a WAV file
@@ -97,6 +99,11 @@ versioning follows [Semantic Versioning](https://semver.org/).
   transmit thread ends abnormally.
 - `morse-gui`: a long result no longer pushes the controls below it out
   of the window.
+- `morse-gui`: at the smallest window size (420×520) the content is about
+  130 px taller than the window, so the lamp and the status line were cut
+  off. The window's content now scrolls when it does not fit. It fits
+  without scrolling at the size the window opens at, in all 12 languages
+  (checked by laying the interface out without a window in the tests).
 - `morse-gui` release builds for Windows no longer open a console window.
 - `morse-cli` no longer panics (exit code 101) when its output is closed
   early, as in `morse encode "SOS" | true` or `morse transmit ... | head

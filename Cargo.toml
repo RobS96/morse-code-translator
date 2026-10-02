@@ -3,7 +3,7 @@ resolver = "2"
 members = ["morse-core", "morse-cli", "morse-gui"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 # let-chains (`if let ... && let ...`) in morse-core and morse-cli need 1.88.
 # morse-gui sets a higher floor of its own because eframe/egui require it.

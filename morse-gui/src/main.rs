@@ -288,6 +288,28 @@ impl Playback {
 
 impl eframe::App for MorseApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default().show(ui, |ui| {
+            self.show(ui);
+        });
+    }
+}
+
+impl MorseApp {
+    /// The window's content inside a vertical scroll area, so that a window
+    /// too short for it (the minimum size, or longer text in another
+    /// language) scrolls instead of cutting the lower controls off. Returns
+    /// (content size, room it was given). Kept apart from
+    /// [`eframe::App::ui`] so the layout can be run without a window (see
+    /// `layout_tests`).
+    fn show(&mut self, ui: &mut egui::Ui) -> (egui::Vec2, egui::Vec2) {
+        let area = egui::ScrollArea::vertical()
+            .id_salt("window")
+            .auto_shrink([false, false])
+            .show(ui, |ui| self.draw(ui));
+        (area.content_size, area.inner_rect.size())
+    }
+
+    fn draw(&mut self, ui: &mut egui::Ui) {
         let transmitting = self.is_transmitting.load(Ordering::SeqCst);
         if transmitting {
             ui.ctx().request_repaint(); // keep animating the lamp
@@ -299,7 +321,7 @@ impl eframe::App for MorseApp {
         let lang = self.lang;
         let t = |msg| tr(lang, msg);
 
-        egui::CentralPanel::default().show(ui, |ui| {
+        {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.heading(t(Msg::AppTitle));
@@ -529,6 +551,9 @@ impl eframe::App for MorseApp {
                 }
                 None => {}
             }
-        });
+        }
     }
 }
+
+#[cfg(test)]
+mod layout_tests;
