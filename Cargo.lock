@@ -1767,18 +1767,18 @@ dependencies = [
 
 [[package]]
 name = "morse-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "morse-core",
 ]
 
 [[package]]
 name = "morse-core"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "morse-gui"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "eframe",
  "morse-core",

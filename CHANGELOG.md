@@ -6,6 +6,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-02
+
 ### Added
 
 - Ukrainian Morse alphabet: `Alphabet::Ukrainian` in `morse-core`,
