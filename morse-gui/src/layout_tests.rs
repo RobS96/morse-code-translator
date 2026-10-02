@@ -115,3 +115,82 @@ fn a_transmission_in_progress_lays_out_too() {
     let l = lay_out(&mut app, OPENING_SIZE);
     assert!(l.content.y <= l.room.y + 0.5);
 }
+
+#[test]
+fn ukrainian_is_detected_or_picked_and_its_label_fits_the_smallest_window() {
+    for lang in Lang::ALL {
+        let mut app = busiest(lang, Mode::Encode);
+        app.input = "ПРИВІТ § ".repeat(40);
+        app.recompute();
+        assert_eq!(app.effective_alphabet(), Alphabet::Ukrainian);
+        assert!(app.output.starts_with(".--. .-. -.-- .-- .. - / "));
+        let l = lay_out(&mut app, MINIMUM_SIZE);
+        let name = lang.native_name();
+        assert!(
+            l.content.x <= l.room.x + 0.5,
+            "{name}: content is {} wide, the window has room for {}",
+            l.content.x,
+            l.room.x
+        );
+    }
+    // Picked by hand, it decodes: Morse cannot be detected.
+    let mut app = MorseApp {
+        mode: Mode::Decode,
+        input: ".--. .-. -.-- .-- .. -".to_string(),
+        ..Default::default()
+    };
+    app.recompute();
+    assert_eq!(app.output, "PRYWIT");
+    app.alphabet = Some(Alphabet::Ukrainian);
+    app.recompute();
+    assert_eq!(app.output, "ПРИВІТ");
+    let l = lay_out(&mut app, OPENING_SIZE);
+    assert!(l.content.y <= l.room.y + 0.5);
+}
+
+#[test]
+fn the_bundled_fonts_cover_the_alphabets_that_need_no_system_font() {
+    // No fallback fonts installed: only what egui ships.
+    let ctx = egui::Context::default();
+    let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+    output.textures_delta.clear();
+    // A character no font has is drawn as a replacement glyph, and its
+    // own width is reported as zero.
+    let covered = |text: &str| {
+        [egui::FontFamily::Proportional, egui::FontFamily::Monospace]
+            .into_iter()
+            .all(|family| {
+                let font = egui::FontId::new(14.0, family);
+                text.chars()
+                    .all(|c| ctx.fonts_mut(|fonts| fonts.glyph_width(&font, c)) > 0.0)
+            })
+    };
+    assert!(covered("ABCXYZabcxyz"));
+    assert!(covered(
+        "АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯЁабвгдежзийклмнопрстуфхцчшщъыьэюяё"
+    ));
+    assert!(covered("ҐЄІЇґєії"));
+    assert!(covered("ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩαβγδεζηθικλμνξοπρστυφχψως"));
+    for uncovered in ["א", "ب", "あ", "한"] {
+        assert!(!covered(uncovered), "{uncovered}");
+    }
+    for alphabet in [
+        Alphabet::Latin,
+        Alphabet::Cyrillic,
+        Alphabet::Ukrainian,
+        Alphabet::Greek,
+    ] {
+        let app = MorseApp {
+            alphabet: Some(alphabet),
+            fonts_available: false,
+            ..Default::default()
+        };
+        assert!(!app.missing_font(), "{alphabet:?}");
+    }
+    let app = MorseApp {
+        alphabet: Some(Alphabet::Hebrew),
+        fonts_available: false,
+        ..Default::default()
+    };
+    assert!(app.missing_font());
+}

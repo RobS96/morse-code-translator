@@ -238,8 +238,8 @@ a longer transmission is refused (exit code 3).
 ## Alphabets
 
 Besides International (Latin) Morse, the translator speaks the national
-Morse alphabets for **Cyrillic** (Russian standard, plus Ukrainian І/Є/Ї
-and Bulgarian Ъ), **Greek**, **Hebrew**, **Arabic**, **Persian**,
+Morse alphabets for **Cyrillic** (Russian standard, plus Bulgarian Ъ),
+**Ukrainian**, **Greek**, **Hebrew**, **Arabic**, **Persian**,
 **Japanese** (Wabun kana) and **Korean** (Hangul jamo). Digits and
 punctuation are shared; Arabic-Indic, Persian and full-width digits are
 accepted too.
@@ -247,15 +247,37 @@ accepted too.
 | | Encode (text → Morse) | Decode (Morse → text) |
 |---|---|---|
 | Alphabet choice | Detected from the text; override with `--alphabet` | `--alphabet`, default `latin`: the same dots and dashes mean different letters in each alphabet |
-| Normalisation | Lowercase, Greek tonos, Hebrew final letters, Ё, Arabic ة (sent as ه), katakana, small kana, voiced kana (が → か + ゛) and Hangul syllables (한 → ㅎㅏㄴ) are all accepted | Hebrew final forms are restored at word ends and voiced kana are recomposed; Korean comes back as jamo, because regrouping jamo into syllables is ambiguous |
+| Normalisation | Lowercase, Greek tonos, Hebrew final letters, Ё, Ukrainian Ґ (sent as Г), Arabic ة (sent as ه), katakana, small kana, voiced kana (が → か + ゛) and Hangul syllables (한 → ㅎㅏㄴ) are all accepted | Hebrew final forms are restored at word ends and voiced kana are recomposed; Korean comes back as jamo, because regrouping jamo into syllables is ambiguous |
 | Accented Latin (Ä, Ñ, Ś, …) | Encoded with their extension codes | Each extension code decodes to one letter: `.-.-` Ä, `.--.-` Å, `-.-..` Ç, `----` CH, `..--.` Ð, `..-..` É, `.-..-` È, `--.-.` Ĝ, `.---.` Ĵ, `--.--` Ñ, `---.` Ö, `...-...` Ś, `.--..` Þ, `..--` Ü, `--..-.` Ź, `--..-` Ż. Letters that share a code come back as the one listed (Æ and Ą as Ä, Ł as È). `...-.` is the prosign `<SN>`, so Ŝ does not round-trip |
-| Latin letters in another alphabet | Always accepted (`QTH Москва`) | Decoded only where the alphabet has no letter of its own for the code (J, U and V in Greek); otherwise the alphabet's letter wins |
+| Latin letters in another alphabet | Always accepted (`QTH Москва`) | Decoded only where the alphabet has no letter of its own for the code (J, U and V in Greek; never in Cyrillic or Ukrainian, which have a letter for all 26 codes); otherwise the alphabet's letter wins |
 | `×` and `%` | Per ITU-R M.1677-1, `×` is sent as X and `%` as `0/0`, joined to a number before it by a hyphen (`2%` → `2-0/0`) | Read back as sent: `X`, `2-0/0` |
 
 Arabic and Persian share letters but not codes (خ is `---` in Arabic and
 `-..-` in Persian). Text containing a Persian-only letter (پ چ ژ گ ک ی)
 is detected as Persian; anything else in Arabic script is detected as
 Arabic. Pass `-a persian` or `-a arabic` to be explicit.
+
+Russian and Ukrainian share letters but not codes either: И is `..` in
+Russian Morse and `-.--` in Ukrainian Morse, where `..` is І. Cyrillic text
+containing a Ukrainian-only letter (і ї є ґ) and no Russian-only one
+(ы э ъ ё) is detected as Ukrainian. Any other Cyrillic text is detected as
+`cyrillic`, and that includes Ukrainian words spelt without those four
+letters (`мир`) and text with letters of both groups. Pass `-a uk` or
+`-a ru` to be explicit.
+
+| Letter | `-a cyrillic` (`ru`, `russian`, `bg`) | `-a ukrainian` (`uk`) |
+|---|---|---|
+| И | `..` | `-.--` |
+| І | Sent as `..`, read back as И | `..` |
+| Є | Sent as `..-..`, read back as Э | `..-..` |
+| Ї | `.---.` | `.---.` |
+| Ґ | No code: left out and reported | Sent as Г (`--.`), read back as Г |
+| Ы, Э | `-.--`, `..-..` | No code: left out and reported |
+| Ъ, Ё | Sent as Ь (`-..-`) and Е (`.`) | No code: left out and reported |
+
+Every other letter the two alphabets share has the same code in both. Ї is
+sent as `.---.`; the Ukrainian regulation table gives it the code of І
+(`..`), which could not be read back as Ї.
 
 Kana make text Japanese. CJK punctuation on its own (an ideographic space,
 `、`, `。`) does not, since other scripts use it too; pass `-a japanese` to
@@ -265,13 +287,17 @@ send such text with the Wabun codes.
 morse alphabets                                        # list them
 morse encode "привет"                                  # .--. .-. .. .-- . -
 morse decode ".--. .-. .. .-- . -" --alphabet cyrillic # ПРИВЕТ
+morse encode "привіт"                                  # .--. .-. -.-- .-- .. -
+morse decode ".--. .-. -.-- .-- .. -" -a uk            # ПРИВІТ
 morse encode "こんにちは"                                # ---- .-.-. -.-. ..-. -...
 morse decode "---- .-.-. -.-. ..-. -..." -a japanese    # こんにちは
 ```
 
 Every table is parsed from the ITU-R M.1677-1-derived tables on Wikipedia
-(Korean from the Republic of Korea's radio-station operating regulation),
-and a unit test asserts no two letters in an alphabet share a code.
+(Korean from the Republic of Korea's radio-station operating regulation,
+Ukrainian from the regulation column of the table in Ukrainian Wikipedia's
+«Абетка Морзе»), and a unit test asserts no two letters in an alphabet
+share a code.
 
 ### Decomposed and half-width input
 
