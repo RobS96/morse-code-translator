@@ -38,6 +38,11 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          # Only main saves a cache. A PR restores main's and does not save its
+          # own: three OSes of per-branch caches ran the repo past GitHub's
+          # 10 GB limit, which evicts the caches main needs.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Format
         run: cargo fmt --all --check
