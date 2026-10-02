@@ -25,7 +25,8 @@ pub enum Alphabet {
     Latin,
     /// Russian national standard, plus Bulgarian Ъ and, so that they are
     /// not dropped, the Ukrainian letters І and Є (sent as И and Э) and Ї.
-    /// Ukrainian text has a table of its own, [`Alphabet::Ukrainian`].
+    /// Ъ is sent as Ь and read from `--.--`. Ukrainian text has a table of
+    /// its own, [`Alphabet::Ukrainian`].
     Cyrillic,
     /// Ukrainian national table: Є, І and Ї, and И on the code Russian
     /// Morse gives Ы. Ґ is sent as Г. Russian Ы, Э, Ъ and Ё have no code.
@@ -158,8 +159,24 @@ impl Alphabet {
         }
     }
 
+    /// Codes read on decode only, each with the letter it decodes to: a
+    /// letter that [`Alphabet::letters`] sends with another letter's code.
+    ///
+    /// Russian Ъ is `--.--` in the table of Wikipedia's "Russian Morse
+    /// code" (read 2026-10-02), a code no other Cyrillic letter has. It is
+    /// sent with the code of Ь all the same: "Morse code for non-Latin
+    /// alphabets" has no Ъ in the Russian standard and gives Bulgarian Ъ
+    /// the code `-..-`.
+    pub(crate) fn decode_only(self) -> &'static [(&'static str, char)] {
+        match self {
+            Alphabet::Cyrillic => &[("--.--", 'Ъ')],
+            _ => &[],
+        }
+    }
+
     /// Extra characters accepted on encode only, each mapped to the letter
     /// whose code it is sent with (final forms, tonos, Ё, Ґ, small kana...).
+    /// A character is looked up as written and, uppercased, once more.
     #[rustfmt::skip]
     pub(crate) fn encode_aliases(self) -> &'static [(char, char)] {
         match self {
@@ -168,10 +185,12 @@ impl Alphabet {
             Alphabet::Greek => &[
                 ('Ά', 'Α'), ('Έ', 'Ε'), ('Ή', 'Η'), ('Ί', 'Ι'), ('Ό', 'Ο'),
                 ('Ύ', 'Υ'), ('Ώ', 'Ω'), ('Ϊ', 'Ι'), ('Ϋ', 'Υ'),
+                // Lowercase: these two have no single uppercase letter.
+                ('ΐ', 'Ι'), ('ΰ', 'Υ'),
             ],
             Alphabet::Hebrew => &[('ך', 'כ'), ('ם', 'מ'), ('ן', 'נ'), ('ף', 'פ'), ('ץ', 'צ')],
             Alphabet::Arabic => &[('أ', 'ا'), ('إ', 'ا'), ('آ', 'ا'), ('ٱ', 'ا'), ('ى', 'ي'), ('ؤ', 'و'), ('ئ', 'ي'), ('ة', 'ه')],
-            Alphabet::Persian => &[('أ', 'ا'), ('إ', 'ا'), ('آ', 'ا'), ('ي', 'ی'), ('ك', 'ک')],
+            Alphabet::Persian => &[('أ', 'ا'), ('إ', 'ا'), ('آ', 'ا'), ('ي', 'ی'), ('ك', 'ک'), ('ئ', 'ی'), ('ؤ', 'و'), ('ة', 'ه'), ('ۀ', 'ه')],
             Alphabet::Japanese => &[
                 ('ぁ', 'あ'), ('ぃ', 'い'), ('ぅ', 'う'), ('ぇ', 'え'), ('ぉ', 'お'),
                 ('っ', 'つ'), ('ゃ', 'や'), ('ゅ', 'ゆ'), ('ょ', 'よ'), ('ゎ', 'わ'),
@@ -206,6 +225,51 @@ pub(crate) const LATIN_DECODE_EXTENSIONS: &[(&str, &str)] = &[
     ("--..-", "Ż"),
 ];
 
+/// Precomposed accented Latin letters of the Latin-1 Supplement and Latin
+/// Extended-A blocks: (base, combining mark, precomposed), uppercase only,
+/// taken from Unicode's canonical decompositions. Letters that have none
+/// (Æ, Ð, Ø, Þ, Đ, Ħ, Ł, Ŋ, Œ, Ŧ) are not here.
+#[rustfmt::skip]
+const LATIN_COMPOSED: &[(char, char, char)] = &[
+    ('A', '\u{0300}', 'À'), ('E', '\u{0300}', 'È'), ('I', '\u{0300}', 'Ì'), ('O', '\u{0300}', 'Ò'),
+    ('U', '\u{0300}', 'Ù'),
+    ('A', '\u{0301}', 'Á'), ('E', '\u{0301}', 'É'), ('I', '\u{0301}', 'Í'), ('O', '\u{0301}', 'Ó'),
+    ('U', '\u{0301}', 'Ú'), ('Y', '\u{0301}', 'Ý'), ('C', '\u{0301}', 'Ć'), ('L', '\u{0301}', 'Ĺ'),
+    ('N', '\u{0301}', 'Ń'), ('R', '\u{0301}', 'Ŕ'), ('S', '\u{0301}', 'Ś'), ('Z', '\u{0301}', 'Ź'),
+    ('A', '\u{0302}', 'Â'), ('E', '\u{0302}', 'Ê'), ('I', '\u{0302}', 'Î'), ('O', '\u{0302}', 'Ô'),
+    ('U', '\u{0302}', 'Û'), ('C', '\u{0302}', 'Ĉ'), ('G', '\u{0302}', 'Ĝ'), ('H', '\u{0302}', 'Ĥ'),
+    ('J', '\u{0302}', 'Ĵ'), ('S', '\u{0302}', 'Ŝ'), ('W', '\u{0302}', 'Ŵ'), ('Y', '\u{0302}', 'Ŷ'),
+    ('A', '\u{0303}', 'Ã'), ('N', '\u{0303}', 'Ñ'), ('O', '\u{0303}', 'Õ'), ('I', '\u{0303}', 'Ĩ'),
+    ('U', '\u{0303}', 'Ũ'),
+    ('A', '\u{0304}', 'Ā'), ('E', '\u{0304}', 'Ē'), ('I', '\u{0304}', 'Ī'), ('O', '\u{0304}', 'Ō'),
+    ('U', '\u{0304}', 'Ū'),
+    ('A', '\u{0306}', 'Ă'), ('E', '\u{0306}', 'Ĕ'), ('G', '\u{0306}', 'Ğ'), ('I', '\u{0306}', 'Ĭ'),
+    ('O', '\u{0306}', 'Ŏ'), ('U', '\u{0306}', 'Ŭ'),
+    ('C', '\u{0307}', 'Ċ'), ('E', '\u{0307}', 'Ė'), ('G', '\u{0307}', 'Ġ'), ('I', '\u{0307}', 'İ'),
+    ('Z', '\u{0307}', 'Ż'),
+    ('A', '\u{0308}', 'Ä'), ('E', '\u{0308}', 'Ë'), ('I', '\u{0308}', 'Ï'), ('O', '\u{0308}', 'Ö'),
+    ('U', '\u{0308}', 'Ü'), ('Y', '\u{0308}', 'Ÿ'),
+    ('A', '\u{030A}', 'Å'), ('U', '\u{030A}', 'Ů'),
+    ('O', '\u{030B}', 'Ő'), ('U', '\u{030B}', 'Ű'),
+    ('C', '\u{030C}', 'Č'), ('D', '\u{030C}', 'Ď'), ('E', '\u{030C}', 'Ě'), ('L', '\u{030C}', 'Ľ'),
+    ('N', '\u{030C}', 'Ň'), ('R', '\u{030C}', 'Ř'), ('S', '\u{030C}', 'Š'), ('T', '\u{030C}', 'Ť'),
+    ('Z', '\u{030C}', 'Ž'),
+    ('C', '\u{0327}', 'Ç'), ('G', '\u{0327}', 'Ģ'), ('K', '\u{0327}', 'Ķ'), ('L', '\u{0327}', 'Ļ'),
+    ('N', '\u{0327}', 'Ņ'), ('R', '\u{0327}', 'Ŗ'), ('S', '\u{0327}', 'Ş'), ('T', '\u{0327}', 'Ţ'),
+    ('A', '\u{0328}', 'Ą'), ('E', '\u{0328}', 'Ę'), ('I', '\u{0328}', 'Į'), ('U', '\u{0328}', 'Ų'),
+];
+
+/// The base letter and combining mark of a precomposed accented Latin
+/// letter (uppercase), e.g. Ê -> (E, U+0302). The encoder sends such a
+/// letter as its base where the alphabet has no code for the letter
+/// itself, and reports the mark, as it does for the decomposed form.
+pub(crate) fn latin_base(c: char) -> Option<(char, char)> {
+    LATIN_COMPOSED
+        .iter()
+        .find(|(_, _, composed)| *composed == c)
+        .map(|&(base, mark, _)| (base, mark))
+}
+
 #[rustfmt::skip]
 const CYRILLIC: &[(char, &str)] = &[
     ('А', ".-"), ('Б', "-..."), ('В', ".--"), ('Г', "--."), ('Д', "-.."), ('Е', "."),
@@ -220,7 +284,8 @@ const CYRILLIC: &[(char, &str)] = &[
     // text is sent with this alphabet: because it was asked for by name, or
     // because the text has Russian-only letters as well. Ukrainian text
     // proper is sent with UKRAINIAN, where И has another code and these
-    // letters decode.
+    // letters decode. Ъ is read from a code of its own
+    // ([`Alphabet::decode_only`]).
     ('І', ".."), ('Є', "..-.."), ('Ъ', "-..-"),
 ];
 
@@ -346,7 +411,9 @@ pub(crate) fn expand(c: char, alphabet: Alphabet) -> Vec<char> {
     }
 }
 
-fn alias(c: char, alphabet: Alphabet) -> char {
+/// The letter `c` is sent as, if it is one of the alphabet's
+/// [`Alphabet::encode_aliases`]; otherwise `c` itself.
+pub(crate) fn alias(c: char, alphabet: Alphabet) -> char {
     alphabet
         .encode_aliases()
         .iter()
@@ -438,15 +505,27 @@ fn voiced_kana(base: char, mark: char) -> Option<char> {
 ///   U+1161..=U+1175, finals U+11A8..=U+11C2) -> compatibility jamo, with
 ///   double and compound jamo written as their component letters, exactly
 ///   as precomposed syllables are sent.
-/// - The zero-width non-joiner (U+200C), which Persian writes inside words,
-///   is removed: it is neither a letter nor a word break.
+/// - Invisible format characters are removed, being neither letters nor
+///   word breaks: the zero-width non-joiner (U+200C), which Persian writes
+///   inside words, and the rest of U+200B..=U+200F (zero-width space and
+///   joiner, directional marks), the byte order mark (U+FEFF), the soft
+///   hyphen (U+00AD), directional embeddings and overrides
+///   (U+202A..=U+202E), and the word joiner, invisible operators and
+///   directional isolates (U+2060..=U+2069).
+/// - Typographic punctuation -> the ASCII character that has the code:
+///   `‘` `’` `ʼ` -> `'`, `“` `”` `„` -> `"`, `‐` `‑` `–` `—` `−` -> `-`,
+///   `…` -> `...`, and Arabic `؟` `،` `؛` -> `?` `,` `;`.
+/// - Full-width forms (U+FF01..=U+FF5E) -> ASCII, where the encoder reads
+///   the ASCII character: letters, digits, punctuation with a code, `%`
+///   and the `<` `>` of a prosign. Full-width brackets stay as they are,
+///   being characters of the Wabun table.
 ///
 /// Not covered (such characters pass through unchanged, and the encoder
 /// drops and reports whatever has no code):
 /// - Any other combining mark: decomposed accented Latin (N + U+0303),
 ///   Greek tonos, Hebrew points, Arabic vowel marks.
 /// - Archaic conjoining jamo and the fillers U+115F/U+1160.
-/// - Ligatures, presentation forms and full-width Latin letters.
+/// - Ligatures and presentation forms.
 pub fn normalize_input(text: &str) -> String {
     let mut out: Vec<char> = Vec::with_capacity(text.len());
     for c in text.chars() {
@@ -491,11 +570,46 @@ pub fn normalize_input(text: &str) -> String {
             0x1161..=0x1175 => out.extend(MEDIALS[(cp - 0x1161) as usize].chars()),
             // FINALS[0] is "no final consonant", so U+11A8 is index 1.
             0x11A8..=0x11C2 => out.extend(FINALS[(cp - 0x11A8 + 1) as usize].chars()),
-            0x200C => {}
+            _ if is_ignorable(c) => {}
+            0x2018 | 0x2019 | 0x02BC => out.push('\''),
+            0x201C..=0x201E => out.push('"'),
+            0x2010 | 0x2011 | 0x2013 | 0x2014 | 0x2212 => out.push('-'),
+            0x2026 => out.extend(['.'; 3]),
+            0x061F => out.push('?'),
+            0x060C => out.push(','),
+            0x061B => out.push(';'),
+            0xFF01..=0xFF5E => out.push(narrow(c).unwrap_or(c)),
             _ => out.push(c),
         }
     }
     out.into_iter().collect()
+}
+
+/// Invisible format characters, which are neither letters nor word breaks
+/// and are ignored on encode and decode alike: the soft hyphen, zero-width
+/// spaces and joiners, directional marks, embeddings, overrides and
+/// isolates, the word joiner and the byte order mark.
+pub(crate) fn is_ignorable(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x00AD | 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x2069 | 0xFEFF
+    )
+}
+
+/// The ASCII character the full-width form `c` (U+FF01..=U+FF5E) is
+/// written for, if the encoder reads that character: a letter, a digit,
+/// punctuation the international table has, `%`, or the `<` `>` of a
+/// prosign. `None` for anything else, which is then reported as typed,
+/// and for the full-width brackets, which Wabun has codes of its own for.
+fn narrow(c: char) -> Option<char> {
+    if c == '（' || c == '）' {
+        return None;
+    }
+    let ascii = char::from_u32((c as u32).checked_sub(0xFEE0)?)?;
+    let read = ascii.is_ascii_alphanumeric()
+        || matches!(ascii, '%' | '<' | '>')
+        || crate::TABLE.contains_key(&ascii);
+    read.then_some(ascii)
 }
 
 // Hangul syllable decomposition (Unicode §3.12), mapping each conjoining
@@ -580,6 +694,58 @@ mod tests {
                 assert!(seen.insert(*code), "{a:?}: duplicate code {code} at {c}");
             }
         }
+    }
+
+    #[test]
+    fn decode_only_codes_are_no_letters_code() {
+        let mut checked = 0;
+        for a in Alphabet::ALL {
+            for &(code, letter) in a.decode_only() {
+                assert!(
+                    code.chars().all(|s| s == '.' || s == '-'),
+                    "{letter}: {code}"
+                );
+                // No letter of the alphabet, shared character or prosign
+                // already decodes from the code...
+                assert!(a.letters().iter().all(|(_, c)| *c != code), "{code}");
+                assert!(crate::TABLE.values().all(|c| *c != code), "{code}");
+                assert!(crate::PROSIGNS.values().all(|c| *c != code), "{code}");
+                // ...and the letter is one the alphabet sends another way.
+                assert!(a.letters().iter().any(|(l, _)| *l == letter), "{letter}");
+                checked += 1;
+            }
+        }
+        assert_eq!(Alphabet::Cyrillic.decode_only(), &[("--.--", 'Ъ')]);
+        assert_eq!(checked, 1);
+        // `--.--` is free in the Ukrainian table too, which has no Ъ.
+        assert!(UKRAINIAN.iter().all(|(_, code)| *code != "--.--"));
+    }
+
+    #[test]
+    fn latin_composed_letters_are_uppercase_with_an_ascii_base() {
+        let mut seen = HashSet::new();
+        for &(base, mark, composed) in LATIN_COMPOSED {
+            assert!(base.is_ascii_uppercase(), "{composed}");
+            assert!(('\u{0300}'..='\u{036F}').contains(&mark), "{composed}");
+            assert!(('\u{00C0}'..='\u{017F}').contains(&composed), "{composed}");
+            assert!(composed.is_uppercase(), "{composed}");
+            assert!(seen.insert(composed), "{composed} is listed twice");
+            assert_eq!(latin_base(composed), Some((base, mark)));
+        }
+        // Every accented letter with an extension code is either here or
+        // has no decomposition into a base letter and a mark.
+        let undecomposed = ['Æ', 'Đ', 'Ð', 'Ł', 'Ø', 'Þ'];
+        for (letter, _) in LATIN_EXTENSIONS {
+            assert_eq!(
+                latin_base(*letter).is_none(),
+                undecomposed.contains(letter),
+                "{letter}"
+            );
+        }
+        for c in ['E', 'e', 'ê', 'Œ', 'Ħ', 'Я', '\u{0302}'] {
+            assert_eq!(latin_base(c), None, "{c}");
+        }
+        assert_eq!(latin_base('Ê'), Some(('E', '\u{0302}')));
     }
 
     #[test]
@@ -828,8 +994,76 @@ mod tests {
     fn normalize_drops_zero_width_non_joiners() {
         assert_eq!(normalize_input("می\u{200C}خواهم"), "میخواهم");
         assert_eq!(normalize_input("\u{200C}A\u{200C}\u{200C}B\u{200C}"), "AB");
-        // Its neighbours are not touched, the zero-width joiner included.
-        assert_eq!(normalize_input("A\u{200B}\u{200D}B"), "A\u{200B}\u{200D}B");
+    }
+
+    #[test]
+    fn normalize_drops_invisible_format_characters() {
+        // Byte order mark, soft hyphen, zero-width space and joiner,
+        // directional marks, embeddings and isolates, word joiner.
+        assert_eq!(normalize_input("\u{FEFF}SOS"), "SOS");
+        assert_eq!(normalize_input("CO\u{00AD}OP"), "COOP");
+        assert_eq!(normalize_input("A\u{200B}\u{200D}B"), "AB");
+        assert_eq!(normalize_input("\u{200F}שלום\u{200E}"), "שלום");
+        assert_eq!(normalize_input("\u{202B}שלום\u{202C}"), "שלום");
+        assert_eq!(normalize_input("\u{2067}سلام\u{2069}"), "سلام");
+        assert_eq!(normalize_input("A\u{2060}B"), "AB");
+        // Both ends of each range, and nothing either side of them.
+        for c in "\u{200B}\u{200F}\u{202A}\u{202E}\u{2060}\u{2069}".chars() {
+            let text = format!("A{c}B");
+            assert_eq!(normalize_input(&text), "AB", "U+{:04X}", c as u32);
+        }
+        for c in "\u{00AC}\u{00AE}\u{200A}\u{2029}\u{202F}\u{205F}\u{206A}\u{FEFE}".chars() {
+            let text = format!("A{c}B");
+            assert_eq!(normalize_input(&text), text, "U+{:04X}", c as u32);
+        }
+        // A joiner between a kana and its combining mark does not keep
+        // them apart.
+        assert_eq!(normalize_input("か\u{200D}\u{3099}"), "が");
+        assert_eq!(normalize_input("И\u{200B}\u{0306}"), "Й");
+    }
+
+    #[test]
+    fn normalize_maps_typographic_punctuation_to_ascii() {
+        assert_eq!(normalize_input("DON\u{2019}T"), "DON'T");
+        assert_eq!(normalize_input("\u{2018}A\u{2019} \u{02BC}"), "'A' '");
+        assert_eq!(
+            normalize_input("\u{201C}A\u{201D} \u{201E}B\u{201C}"),
+            "\"A\" \"B\""
+        );
+        assert_eq!(
+            normalize_input("\u{2010}\u{2011}\u{2013}\u{2014}\u{2212}"),
+            "-----"
+        );
+        assert_eq!(normalize_input("A\u{2026}B"), "A...B");
+        assert_eq!(normalize_input("\u{061F}\u{060C}\u{061B}"), "?,;");
+        // Each of them becomes a character the international table has.
+        for c in "'\"-.?,;".chars() {
+            assert!(crate::TABLE.contains_key(&c), "{c}");
+        }
+    }
+
+    #[test]
+    fn normalize_narrows_full_width_forms() {
+        assert_eq!(
+            normalize_input("ＳＯＳ　ｓｏｓ　０１９"),
+            "SOS\u{3000}sos\u{3000}019"
+        );
+        assert_eq!(normalize_input("\u{FF21}\u{FF3A}\u{FF41}\u{FF5A}"), "AZaz");
+        // Punctuation with a code, and what the encoder reads without
+        // one: % and the brackets of a prosign.
+        assert_eq!(
+            normalize_input("．，？＇！／＆：；＝＋－＿＂＄＠"),
+            ".,?'!/&:;=+-_\"$@"
+        );
+        assert_eq!(normalize_input("＜ＳＫ＞　５０％"), "<SK>\u{3000}50%");
+        // The rest would be left out either way, and is reported as typed.
+        assert_eq!(
+            normalize_input("＃＊［＼］＾｀｛｜｝～"),
+            "＃＊［＼］＾｀｛｜｝～"
+        );
+        // Full-width brackets are characters of the Wabun table.
+        assert_eq!(normalize_input("（）"), "（）");
+        assert_eq!(normalize_input("\u{FF00}\u{FF5F}"), "\u{FF00}\u{FF5F}");
     }
 
     #[test]

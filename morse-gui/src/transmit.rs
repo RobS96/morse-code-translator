@@ -2,6 +2,7 @@
 //! card: mapping the controls to timing and tone, walking the lamp along
 //! the schedule, cancelling, and summarising what a translation left out.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -165,9 +166,10 @@ pub fn left_out_codes(skipped: &[String]) -> String {
 /// The first [`LISTED`] distinct items, space-separated, followed by a
 /// count of the distinct items not listed.
 fn list_distinct(items: impl Iterator<Item = String>) -> String {
+    let mut seen: HashSet<String> = HashSet::new();
     let mut distinct: Vec<String> = Vec::new();
     for item in items {
-        if !distinct.contains(&item) {
+        if seen.insert(item.clone()) {
             distinct.push(item);
         }
     }

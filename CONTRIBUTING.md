@@ -54,8 +54,9 @@ CI also runs these, which matter mostly when dependencies change:
 - **Bug fix** → add a regression test that fails before your fix and
   passes after.
 - **Public API change** → update doc comments (`///`) and `README.md`.
-- **New GUI text** → a new `Msg` variant in `morse-gui/src/i18n.rs` needs a
-  string in each of the 12 languages; the tests there fail on a missing one.
+- **New GUI text** → a new message in `morse-gui/src/i18n.rs` needs a
+  string in each of the 12 languages; the crate does not compile without
+  them.
 
 ## Commit / PR conventions
 

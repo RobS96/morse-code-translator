@@ -6,8 +6,39 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `-a cyrillic` (`ru`) decodes `--.--` as Ъ, the code the table in
+  Wikipedia's "Russian Morse code" gives the letter; the code used to be
+  left out as unrecognised. Ъ is still sent with the code of Ь (`-..-`),
+  so it reads back as Ь. `-a ukrainian`, which has no Ъ, is unchanged.
+- Typographic punctuation is encoded as the ASCII character it stands for
+  instead of being left out: `‘` `’` `ʼ` as `'`, `“` `”` `„` as `"`, `‐`
+  `‑` `–` `—` `−` as `-`, `…` as `...`, and Arabic `؟` `،` `؛` as `?` `,`
+  `;`. `morse encode "DON’T"` now sends the apostrophe.
+- Full-width letters, digits and punctuation (U+FF01 to U+FF5E) are
+  encoded as their ASCII forms (`ＳＯＳ！` as `SOS!`). Full-width brackets
+  keep their Wabun codes.
+
 ### Changed
 
+- An accented Latin letter with no Morse code of its own is sent as its
+  base letter instead of being left out whole: `morse encode "ÊTRE"`
+  gives `. - .-. .`, where it gave `- .-. .`. The accent is what is
+  reported as left out, as the combining mark (`'\u{302}' (U+0302)` for
+  Ê), which is what the decomposed form E + U+0302 already did; so
+  `EncodeReport::skipped` holds the mark, not the letter, and `--strict`
+  still exits with code 2. This covers the accented letters of the
+  Latin-1 Supplement and Latin Extended-A blocks. Letters with a code of
+  their own (É, Ñ, Ä, Ö, Ü, À, Ç, …) keep it; in a non-Latin alphabet,
+  which has no such codes, they are sent as their base letters too.
+- `morse encode` (and `transmit`, `wav`) name at most ten distinct
+  left-out characters in the warning, followed by `and N more`, as
+  `decode` already did for codes.
+- `morse-gui`: the list of interface messages and the message type are
+  declared together, so a message added without its translations no
+  longer compiles; it could previously compile, pass the tests and panic
+  when shown.
 - A release is published only from a signed, annotated tag that GitHub
   verifies, on a commit that is on `main`, and only when the tag, the crate
   version, the version `morse --version` prints and the changelog heading
@@ -19,6 +50,23 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - The documented `gh attestation verify` command names the release
   workflow (`--signer-workflow`), so an attestation from any other
   workflow in the repository is not accepted.
+
+### Fixed
+
+- A byte order mark and other invisible format characters are ignored by
+  both `encode` and `decode`: U+FEFF, the soft hyphen (U+00AD),
+  U+200B to U+200F, U+202A to U+202E and U+2060 to U+2069. A file or
+  pipe starting with a byte order mark used to lose its first code on
+  decode (`... --- ...` came back as `OS`) and to be reported as lossy
+  on encode, with exit code 2 under `--strict`.
+- Persian: ئ is sent as ی, ؤ as و, and ة and ۀ as ه, instead of being
+  left out (`رئیس` lost its second letter).
+- Greek ΐ and ΰ are sent as Ι and Υ with nothing reported, like every
+  other accented Greek vowel. They were sent, but also reported as left
+  out, so `--strict` exited with code 2.
+- The left-out warnings of `morse-cli` and the status line of `morse-gui`
+  no longer take time quadratic in the number of distinct characters or
+  codes left out.
 
 ## [0.5.0] - 2026-10-02
 

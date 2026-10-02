@@ -153,7 +153,16 @@ morse: warning: left out 1 character with no Morse code: '~' (U+007E)
 morse: warning: left out 1 code not recognised in the latin alphabet: "..--..--"
 ```
 
-That does not change the exit code unless you pass `--strict` to `encode`,
+A warning names the first ten distinct characters or codes and counts the
+rest (`and 16 more`).
+
+An accented Latin letter with no Morse code of its own (Ê, Ú, Č, …) is not
+left out whole: its base letter is sent, and the accent is what the warning
+names, as the combining mark it would be if typed separately. `morse encode
+"ÊTRE"` prints `. - .-. .` and warns that `'\u{302}' (U+0302)`, the
+circumflex, was left out.
+
+None of this changes the exit code unless you pass `--strict` to `encode`,
 `decode` or `wav`; the translation is printed (or the file written) either
 way.
 
@@ -179,6 +188,10 @@ autocorrect put in place of dots and dashes: `·` and `•` as a dot; `−`
 separator. Each long dash counts as **one** dash. If your editor's "smart
 dashes" turned a typed `--` into a single `—`, that information is gone and
 the result will be wrong: turn smart punctuation off when typing Morse.
+
+Invisible format characters are ignored by `decode` and `encode` alike: a
+byte order mark at the start of a file or of piped input, soft hyphens,
+and zero-width and text-direction marks.
 
 **Procedural signs ("prosigns").** Common ham-radio prosigns — `<AR>`
 (end of message), `<SK>` (end of contact), `<BT>` (new paragraph/break),
@@ -252,8 +265,8 @@ accepted too.
 | | Encode (text → Morse) | Decode (Morse → text) |
 |---|---|---|
 | Alphabet choice | Detected from the text; override with `--alphabet` | `--alphabet`, default `latin`: the same dots and dashes mean different letters in each alphabet |
-| Normalisation | Lowercase, Greek tonos, Hebrew final letters, Ё, Ukrainian Ґ (sent as Г), Arabic ة (sent as ه), katakana, small kana, voiced kana (が → か + ゛) and Hangul syllables (한 → ㅎㅏㄴ) are all accepted | Hebrew final forms are restored at word ends and voiced kana are recomposed; Korean comes back as jamo, because regrouping jamo into syllables is ambiguous |
-| Accented Latin (Ä, Ñ, Ś, …) | Encoded with their extension codes | Each extension code decodes to one letter: `.-.-` Ä, `.--.-` Å, `-.-..` Ç, `----` CH, `..--.` Ð, `..-..` É, `.-..-` È, `--.-.` Ĝ, `.---.` Ĵ, `--.--` Ñ, `---.` Ö, `...-...` Ś, `.--..` Þ, `..--` Ü, `--..-.` Ź, `--..-` Ż. Letters that share a code come back as the one listed (Æ and Ą as Ä, Ł as È). `...-.` is the prosign `<SN>`, so Ŝ does not round-trip |
+| Normalisation | Lowercase, Greek tonos and dialytika, Hebrew final letters, Ё, Ukrainian Ґ (sent as Г), Arabic ة (sent as ه), Persian ئ ؤ ة ۀ (sent as ی و ه ه), katakana, small kana, voiced kana (が → か + ゛) and Hangul syllables (한 → ㅎㅏㄴ) are all accepted | Hebrew final forms are restored at word ends and voiced kana are recomposed; Korean comes back as jamo, because regrouping jamo into syllables is ambiguous |
+| Accented Latin (Ä, Ñ, Ś, …) | Encoded with their extension codes. A letter that has none (Ê, Ú, Č, …) is sent as its base letter, and its accent is reported as left out | Each extension code decodes to one letter: `.-.-` Ä, `.--.-` Å, `-.-..` Ç, `----` CH, `..--.` Ð, `..-..` É, `.-..-` È, `--.-.` Ĝ, `.---.` Ĵ, `--.--` Ñ, `---.` Ö, `...-...` Ś, `.--..` Þ, `..--` Ü, `--..-.` Ź, `--..-` Ż. Letters that share a code come back as the one listed (Æ and Ą as Ä, Ł as È). `...-.` is the prosign `<SN>`, so Ŝ does not round-trip |
 | Latin letters in another alphabet | Always accepted (`QTH Москва`) | Decoded only where the alphabet has no letter of its own for the code (J, U and V in Greek; never in Cyrillic or Ukrainian, which have a letter for all 26 codes); otherwise the alphabet's letter wins |
 | `×` and `%` | Per ITU-R M.1677-1, `×` is sent as X and `%` as `0/0`, joined to a number before it by a hyphen (`2%` → `2-0/0`) | Read back as sent: `X`, `2-0/0` |
 
@@ -278,11 +291,15 @@ letters (`мир`) and text with letters of both groups. Pass `-a uk` or
 | Ї | `.---.` | `.---.` |
 | Ґ | No code: left out and reported | Sent as Г (`--.`), read back as Г |
 | Ы, Э | `-.--`, `..-..` | No code: left out and reported |
-| Ъ, Ё | Sent as Ь (`-..-`) and Е (`.`) | No code: left out and reported |
+| Ъ, Ё | Sent as Ь (`-..-`) and Е (`.`). `--.--` is read back as Ъ | No code: left out and reported |
 
 Every other letter the two alphabets share has the same code in both. Ї is
 sent as `.---.`; the Ukrainian regulation table gives it the code of І
 (`..`), which could not be read back as Ї.
+
+`-a cyrillic` reads `--.--` as Ъ, the code Wikipedia's "Russian Morse code"
+gives the letter, but goes on sending Ъ with the code of Ь (the Bulgarian
+convention), so Ъ does not round-trip: sent, it reads back as Ь.
 
 Kana make text Japanese. CJK punctuation on its own (an ideographic space,
 `、`, `。`) does not, since other scripts use it too; pass `-a japanese` to
@@ -301,8 +318,8 @@ morse decode "---- .-.-. -.-. ..-. -..." -a japanese    # こんにちは
 Every table is parsed from the ITU-R M.1677-1-derived tables on Wikipedia
 (Korean from the Republic of Korea's radio-station operating regulation,
 Ukrainian from the regulation column of the table in Ukrainian Wikipedia's
-«Абетка Морзе»), and a unit test asserts no two letters in an alphabet
-share a code.
+«Абетка Морзе»), and unit tests assert that no two letters in an alphabet,
+and no two characters of the international table, share a code.
 
 ### Decomposed and half-width input
 
@@ -317,14 +334,26 @@ encoder rewrites the common cases before looking anything up
 | Kana + combining dakuten/handakuten (U+3099, U+309A) | The precomposed kana (か + U+3099 → が); where none exists, the kana followed by a spacing ゛ or ゜ |
 | Half-width katakana and punctuation (U+FF61–U+FF9F) | Full-width, voiced marks combined (ｶﾞ → ガ) |
 | Hangul conjoining jamo (U+1100–U+1112, U+1161–U+1175, U+11A8–U+11C2) | Compatibility jamo, double and compound jamo as their component letters |
-| Zero-width non-joiner (U+200C), written inside Persian words | Removed: neither a letter nor a word break |
+| Invisible format characters: the zero-width non-joiner written inside Persian words (U+200C) and the rest of U+200B–U+200F, the byte order mark (U+FEFF), the soft hyphen (U+00AD), U+202A–U+202E and U+2060–U+2069 | Removed: neither letters nor word breaks |
+| Typographic punctuation: `‘` `’` `ʼ`; `“` `”` `„`; `‐` `‑` `–` `—` `−`; `…`; Arabic `؟` `،` `؛` | `'`; `"`; `-`; `...`; `?` `,` `;` |
+| Full-width letters, digits and punctuation (U+FF01–U+FF5E) | ASCII, for every character the encoder reads (`ＳＯＳ！` → `SOS!`). Full-width brackets `（` `）` keep their Wabun codes; a character with no code either way (`＃`) is reported as typed |
 
 This is a hand-written subset, not full Unicode normalisation. Not covered:
 other combining marks (decomposed accented Latin such as N + U+0303, Greek
-tonos, Hebrew points, Arabic vowel marks), archaic jamo, ligatures,
-presentation forms and full-width Latin letters. With those the base letter
-is sent and the rest is left out and reported, so precompose such text
-before encoding if the accent matters.
+tonos, Hebrew points, Arabic vowel marks), archaic jamo, ligatures and
+presentation forms. With those the base letter is sent and the rest is left
+out and reported. A decomposed letter is not recomposed, so N + U+0303 is
+sent as N where Ñ would be `--.--`: precompose such text before encoding if
+the accent matters.
+
+Precomposed accented Latin letters with no code of their own are treated
+the same way as their decomposed forms: Ê is sent as E and U+0302 is
+reported, exactly as for E + U+0302. That covers the accented letters of
+the Latin-1 Supplement and Latin Extended-A blocks (those of French,
+Spanish, Portuguese, Czech, Polish, Turkish and so on). Anything else with
+no code is left out and reported whole: a letter that is not a base letter
+plus an accent, such as Œ, Ħ or Ŋ, and accented letters from further
+blocks, such as Romanian Ș and Ț or Vietnamese ế.
 
 ### Codes with two readings
 

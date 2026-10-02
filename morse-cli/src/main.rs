@@ -1,8 +1,10 @@
 #![forbid(unsafe_code)]
 
+use std::collections::HashSet;
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
+use std::hash::Hash;
 use std::io::{self, BufWriter, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{self, ExitCode};
@@ -27,8 +29,9 @@ const MIN_WPM: f64 = 1.0;
 /// Fastest speed `--wpm` and `--farnsworth-wpm` accept (12 ms per unit).
 const MAX_WPM: f64 = 100.0;
 
-/// How many distinct unrecognised codes a decode warning lists in full.
-const LISTED_CODES: usize = 10;
+/// How many distinct dropped characters or unrecognised codes a warning
+/// lists in full.
+const LISTED: usize = 10;
 
 fn usage(prog: &str) -> String {
     let Tone {
@@ -452,22 +455,30 @@ fn resolve_alphabet(request: &Request) -> Result<Option<Alphabet>, String> {
     }
 }
 
-/// One-line warning naming each distinct dropped character once, or
-/// `None` if nothing was dropped.
+/// Each distinct item once, in the order first seen.
+fn each_once<T: Copy + Eq + Hash>(items: impl IntoIterator<Item = T>) -> Vec<T> {
+    let mut seen = HashSet::new();
+    items
+        .into_iter()
+        .filter(|&item| seen.insert(item))
+        .collect()
+}
+
+/// One-line warning naming each distinct dropped character once (the
+/// first [`LISTED`] of them), or `None` if nothing was dropped.
 fn dropped_warning(skipped: &[char]) -> Option<String> {
-    let mut distinct: Vec<char> = Vec::new();
-    for &c in skipped {
-        if !distinct.contains(&c) {
-            distinct.push(c);
-        }
-    }
+    let distinct = each_once(skipped.iter().copied());
     if distinct.is_empty() {
         return None;
     }
-    let list: Vec<String> = distinct
+    let mut list: Vec<String> = distinct
         .iter()
+        .take(LISTED)
         .map(|c| format!("{c:?} (U+{:04X})", *c as u32))
         .collect();
+    if distinct.len() > LISTED {
+        list.push(format!("and {} more", distinct.len() - LISTED));
+    }
     Some(format!(
         "morse: warning: left out {} with no Morse code: {}",
         if skipped.len() == 1 {
@@ -480,24 +491,19 @@ fn dropped_warning(skipped: &[char]) -> Option<String> {
 }
 
 /// One-line warning naming each distinct unrecognised code once (the
-/// first [`LISTED_CODES`] of them), or `None` if every code was recognised.
+/// first [`LISTED`] of them), or `None` if every code was recognised.
 fn unrecognised_warning(skipped: &[String], alphabet: Alphabet) -> Option<String> {
-    let mut distinct: Vec<&String> = Vec::new();
-    for code in skipped {
-        if !distinct.contains(&code) {
-            distinct.push(code);
-        }
-    }
+    let distinct = each_once(skipped);
     if distinct.is_empty() {
         return None;
     }
     let mut list: Vec<String> = distinct
         .iter()
-        .take(LISTED_CODES)
+        .take(LISTED)
         .map(|code| format!("{code:?}"))
         .collect();
-    if distinct.len() > LISTED_CODES {
-        list.push(format!("and {} more", distinct.len() - LISTED_CODES));
+    if distinct.len() > LISTED {
+        list.push(format!("and {} more", distinct.len() - LISTED));
     }
     Some(format!(
         "morse: warning: left out {} not recognised in the {} alphabet: {}",
@@ -1461,5 +1467,17 @@ mod tests {
              '~' (U+007E), '#' (U+0023), '\\u{303}' (U+0303)"
         );
         assert!(!warning.contains('\n'));
+        // A long list is cut short, repeats counting once.
+        let many: Vec<char> = ('a'..='z').chain(['a', 'z']).collect();
+        let warning = dropped_warning(&many).unwrap();
+        assert!(warning.contains("left out 28 characters"), "{warning}");
+        assert!(
+            warning.ends_with("'i' (U+0069), 'j' (U+006A), and 16 more"),
+            "{warning}"
+        );
+        assert!(!warning.contains('\n'));
+        let exactly: Vec<char> = ('a'..='j').collect();
+        let warning = dropped_warning(&exactly).unwrap();
+        assert!(warning.ends_with("'i' (U+0069), 'j' (U+006A)"), "{warning}");
     }
 }
