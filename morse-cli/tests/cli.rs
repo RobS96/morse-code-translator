@@ -666,6 +666,42 @@ fn text_is_read_from_stdin_when_no_text_argument_is_given() {
 }
 
 #[test]
+fn a_byte_order_mark_on_stdin_is_not_part_of_the_text() {
+    let output = morse_with_stdin(&["decode", "--strict"], b"\xef\xbb\xbf... --- ...\n");
+    assert_exit(&output, 0);
+    assert_eq!(stdout(&output), "SOS\n");
+    assert_eq!(stderr(&output), "");
+
+    let output = morse_with_stdin(&["encode", "--strict"], b"\xef\xbb\xbfSOS\n");
+    assert_exit(&output, 0);
+    assert_eq!(stdout(&output), "... --- ...\n");
+    assert_eq!(stderr(&output), "");
+}
+
+#[test]
+fn an_accent_with_no_code_is_left_out_and_its_letter_still_sent() {
+    let output = morse(&["encode", "ÊTRE"]);
+    assert_exit(&output, 0);
+    assert_eq!(stdout(&output), ". - .-. .\n");
+    assert_eq!(
+        stderr(&output),
+        "morse: warning: left out 1 character with no Morse code: '\\u{302}' (U+0302)\n"
+    );
+    // The accent was lost, which --strict counts.
+    assert_exit(&morse(&["encode", "--strict", "ÊTRE"]), 2);
+
+    // Typographic punctuation and Greek ΐ lose nothing.
+    let output = morse(&["encode", "--strict", "DON\u{2019}T"]);
+    assert_exit(&output, 0);
+    assert_eq!(stdout(&output), "-.. --- -. .----. -\n");
+    assert_eq!(stderr(&output), "");
+    let output = morse(&["encode", "--strict", "ταΐζω"]);
+    assert_exit(&output, 0);
+    assert_eq!(stdout(&output), "- .- .. --.. .--\n");
+    assert_eq!(stderr(&output), "");
+}
+
+#[test]
 fn a_text_argument_wins_over_stdin() {
     let output = morse_with_stdin(&["encode", "SOS"], b"IGNORED\n");
     assert_exit(&output, 0);

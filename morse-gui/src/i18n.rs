@@ -100,9 +100,30 @@ impl Lang {
     }
 }
 
-/// A translatable UI message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Msg {
+/// Declares [`Msg`] from a list of names, with the number of messages and,
+/// for the tests, the list of them all. Both come from the same names as
+/// the enum, so neither can miss a message: a message's discriminant is
+/// its index in `ALL` and in each row of [`tr`].
+macro_rules! messages {
+    ($($name:ident,)*) => {
+        /// A translatable UI message.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum Msg {
+            $($name,)*
+        }
+
+        impl Msg {
+            /// How many messages there are.
+            const COUNT: usize = [$(Msg::$name,)*].len();
+
+            /// Every message, in declaration order.
+            #[cfg(test)]
+            pub const ALL: [Msg; Msg::COUNT] = [$(Msg::$name,)*];
+        }
+    };
+}
+
+messages! {
     AppTitle,
     TextToMorse,
     MorseToText,
@@ -137,46 +158,10 @@ pub enum Msg {
     LeftOutCodes,
 }
 
-impl Msg {
-    pub const ALL: [Msg; 32] = [
-        Msg::AppTitle,
-        Msg::TextToMorse,
-        Msg::MorseToText,
-        Msg::TextLabel,
-        Msg::MorseLabel,
-        Msg::AlphabetLabel,
-        Msg::AutoDetect,
-        Msg::Prosigns,
-        Msg::Result,
-        Msg::Copy,
-        Msg::Copied,
-        Msg::SpeedHeading,
-        Msg::CharSpeed,
-        Msg::Farnsworth,
-        Msg::FarnsworthHelp,
-        Msg::EffectiveSpeed,
-        Msg::Transmit,
-        Msg::Tip,
-        Msg::Language,
-        Msg::MissingFont,
-        Msg::PsEndOfMessage,
-        Msg::PsEndOfContact,
-        Msg::PsNewParagraph,
-        Msg::PsOverToYou,
-        Msg::PsWait,
-        Msg::PsStartCopying,
-        Msg::Stop,
-        Msg::ToneLabel,
-        Msg::VolumeLabel,
-        Msg::AudioUnavailable,
-        Msg::LeftOutChars,
-        Msg::LeftOutCodes,
-    ];
-}
-
-/// Translate `msg` into `lang`.
+/// Translate `msg` into `lang`. Each row holds one string per message, in
+/// declaration order; a row of any other length does not compile.
 pub fn tr(lang: Lang, msg: Msg) -> &'static str {
-    let row: [&'static str; 32] = match lang {
+    let row: [&'static str; Msg::COUNT] = match lang {
         Lang::En => [
             "Morse Code Translator",
             "Text → Morse",
@@ -586,10 +571,7 @@ pub fn tr(lang: Lang, msg: Msg) -> &'static str {
             "已省略（无法识别）：",
         ],
     };
-    row[Msg::ALL
-        .iter()
-        .position(|m| *m == msg)
-        .expect("every Msg is in Msg::ALL")]
+    row[msg as usize]
 }
 
 #[cfg(test)]
@@ -603,6 +585,20 @@ mod tests {
                 assert!(!tr(lang, msg).trim().is_empty(), "{lang:?} {msg:?}");
             }
         }
+    }
+
+    #[test]
+    fn every_message_is_in_all_at_its_own_index() {
+        // `tr` indexes a row by the message's discriminant.
+        for (index, msg) in Msg::ALL.into_iter().enumerate() {
+            assert_eq!(msg as usize, index, "{msg:?}");
+        }
+        assert_eq!(Msg::ALL[0], Msg::AppTitle);
+        assert_eq!(tr(Lang::En, Msg::AppTitle), "Morse Code Translator");
+        assert_eq!(
+            tr(Lang::En, Msg::LeftOutCodes),
+            "Left out (not recognised):"
+        );
     }
 
     #[test]

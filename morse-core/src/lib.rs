@@ -223,7 +223,8 @@ const ENCODE_ONLY: &[(char, &str)] = &[('×', "-..-")];
 /// Latin letter is decoded only where the alphabet has no letter of its
 /// own for the code. The first letter listed for a code wins (so
 /// [`Alphabet::Cyrillic`] decodes the Russian letter, not the
-/// Ukrainian/Bulgarian variant listed after it).
+/// Ukrainian/Bulgarian variant listed after it). Last come the codes an
+/// alphabet reads but does not send ([`Alphabet::decode_only`]).
 struct Tables {
     encode: HashMap<char, &'static str>,
     decode: HashMap<&'static str, String>,
@@ -255,6 +256,9 @@ static TABLES: LazyLock<HashMap<Alphabet, Tables>> = LazyLock::new(|| {
             for &(c, code) in alphabet.letters() {
                 own.entry(code).or_insert_with(|| c.to_string());
             }
+            for &(code, c) in alphabet.decode_only() {
+                own.entry(code).or_insert_with(|| c.to_string());
+            }
             decode.extend(own);
             (alphabet, Tables { encode, decode })
         })
@@ -271,19 +275,34 @@ fn table_chars(c: char, alphabet: Alphabet) -> Vec<char> {
     if c == '%' {
         return vec!['0', '/', '0'];
     }
-    c.to_uppercase()
+    // An alias is looked up before uppercasing as well as after: Greek ΐ
+    // and ΰ uppercase to a vowel and two combining marks.
+    alphabets::alias(c, alphabet)
+        .to_uppercase()
         .flat_map(|u| alphabets::expand(u, alphabet))
         .collect()
 }
 
 /// The codes `word` is sent as. Every input character that has no code,
-/// or only part of whose expansion has one, is appended to `skipped`.
+/// or only part of whose expansion has one, is appended to `skipped`; for
+/// an accented Latin letter sent as its base letter, that is the accent.
 fn codes_for_word(word: &str, alphabet: Alphabet, skipped: &mut Vec<char>) -> Vec<&'static str> {
     let encode = &TABLES[&alphabet].encode;
     let mut codes = Vec::new();
     let mut after_digit = false;
     for c in word.chars() {
         let mut table_chars = table_chars(c, alphabet);
+        let mut dropped = c;
+        // An accented Latin letter with no code of its own is sent as its
+        // base letter, and its accent is left out and reported: just what
+        // happens when the accent is a combining mark after the letter.
+        if let [letter] = table_chars[..]
+            && !encode.contains_key(&letter)
+            && let Some((base, mark)) = alphabets::latin_base(letter)
+        {
+            table_chars = vec![base, mark];
+            dropped = mark;
+        }
         // ITU-R M.1677-1 (part I, 3.3.2): a number is joined to its % by a
         // hyphen, so 2% is sent as 2-0/0 and not as 20/0.
         if c == '%' && after_digit {
@@ -293,7 +312,7 @@ fn codes_for_word(word: &str, alphabet: Alphabet, skipped: &mut Vec<char>) -> Ve
         let before = codes.len();
         codes.extend(table_chars.iter().filter_map(|t| encode.get(t).copied()));
         if codes.len() - before != table_chars.len() || table_chars.is_empty() {
-            skipped.push(c);
+            skipped.push(dropped);
         }
     }
     codes
@@ -419,8 +438,11 @@ pub struct EncodeReport {
     pub morse: String,
     /// Every input character that has no code in the alphabet and was
     /// dropped, in input order, repeats included. Characters are reported
-    /// as they stand after [`normalize_input`]. Whitespace is a separator,
-    /// not a dropped character.
+    /// as they stand after [`normalize_input`]. An accented Latin letter
+    /// with no code of its own is sent as its base letter, and what is
+    /// reported is the combining mark of the accent that was left out
+    /// (U+0302 for Ê), as for the same letter typed in decomposed form.
+    /// Whitespace is a separator, not a dropped character.
     pub skipped: Vec<char>,
 }
 
@@ -428,8 +450,10 @@ pub struct EncodeReport {
 /// The alphabet is detected from the text ([`Alphabet::detect`]); use
 /// [`encode_in`] to choose it. Input is normalised with
 /// [`normalize_input`]. Unknown characters are dropped, and a word left
-/// with no characters is dropped with them; use [`encode_lossy_report`] to
-/// learn which. Words stay separated by " / ". A `<NAME>` token (e.g.
+/// with no characters is dropped with them; an accented Latin letter with
+/// no code of its own (Ê) is sent as its base letter (E), and its accent
+/// is what is dropped. Use [`encode_lossy_report`] to learn what was
+/// dropped. Words stay separated by " / ". A `<NAME>` token (e.g.
 /// `<SK>`, `<AR>`) matching a known prosign is sent as a single fused
 /// character instead of being letter-decomposed, whether it stands alone
 /// or inside a word (`SOS<SK>`).
@@ -474,11 +498,14 @@ pub struct DecodeReport {
 
 /// Rewrite the look-alike characters that autocorrect, word processors and
 /// other Morse tools put in place of the dots, dashes and word separators
-/// [`decode`] reads. No Morse code contains any of them.
+/// [`decode`] reads, and take out invisible format characters (a byte
+/// order mark, zero-width and directional marks). No Morse code contains
+/// any of them.
 fn normalize_morse(morse: &str) -> String {
     let mut out = String::with_capacity(morse.len());
     for c in morse.chars() {
         match c {
+            _ if alphabets::is_ignorable(c) => {}
             // Middle dot, bullet.
             '\u{00B7}' | '\u{2022}' => out.push('.'),
             // Minus sign, en dash, em dash, underscore.
@@ -497,9 +524,10 @@ fn normalize_morse(morse: &str) -> String {
 /// known prosign (no internal spaces) decodes to its `<NAME>` form.
 ///
 /// Common look-alikes are read as the symbol they stand for: `·` `•` as
-/// `.`, `−` `–` `—` `_` as `-`, `…` as `...` and `|` as `/`. Unknown codes
-/// are dropped, and a word left with no letters is dropped with them; use
-/// [`decode_lossy_report`] to learn which.
+/// `.`, `−` `–` `—` `_` as `-`, `…` as `...` and `|` as `/`. Invisible
+/// format characters, such as the byte order mark at the start of a file,
+/// are ignored. Unknown codes are dropped, and a word left with no letters
+/// is dropped with them; use [`decode_lossy_report`] to learn which.
 pub fn decode(morse: &str) -> String {
     decode_in(morse, Alphabet::Latin)
 }
@@ -779,6 +807,84 @@ mod tests {
         let report = encode_lossy_report("N\u{0303}");
         assert_eq!(report.morse, "-.");
         assert_eq!(report.skipped, vec!['\u{0303}']);
+    }
+
+    #[test]
+    fn accented_latin_without_a_code_is_sent_as_its_base_letter() {
+        // Each combining mark, the precomposed letters that carry it and
+        // have no code of their own, and their base letters in that order.
+        let accented: &[(char, &str, &str)] = &[
+            ('\u{0300}', "ÌÒÙìòù", "IOUiou"),
+            ('\u{0301}', "ÁÍÚÝáíúýĹĺŔŕ", "AIUYaiuyLlRr"),
+            ('\u{0302}', "ÂÊÎÔÛâêîôûŴŵŶŷ", "AEIOUaeiouWwYy"),
+            ('\u{0303}', "ÃÕãõĨĩŨũ", "AOaoIiUu"),
+            ('\u{0304}', "ĀāĒēĪīŌōŪū", "AaEeIiOoUu"),
+            ('\u{0306}', "ĂăĔĕĞğĬĭŎŏ", "AaEeGgIiOo"),
+            ('\u{0307}', "ĊċĖėĠġİ", "CcEeGgI"),
+            ('\u{0308}', "ËÏëïÿŸ", "EIeiyY"),
+            ('\u{030A}', "Ůů", "Uu"),
+            ('\u{030B}', "ŐőŰű", "OoUu"),
+            ('\u{030C}', "ČčĎďĚěĽľŇňŘřŤťŽž", "CcDdEeLlNnRrTtZz"),
+            ('\u{0327}', "ĢģĶķĻļŅņŖŗŞşŢţ", "GgKkLlNnRrSsTt"),
+            ('\u{0328}', "ĮįŲų", "IiUu"),
+        ];
+        let mut checked = 0;
+        for &(mark, letters, bases) in accented {
+            assert_eq!(letters.chars().count(), bases.chars().count());
+            for (letter, base) in letters.chars().zip(bases.chars()) {
+                let precomposed = letter.to_string();
+                let decomposed = format!("{base}{mark}");
+                // The decomposed form sends the base letter and reports
+                // the mark; the precomposed letter does exactly the same.
+                let report = encode_lossy_report(&precomposed);
+                assert_eq!(report, encode_lossy_report(&decomposed), "{letter}");
+                assert_eq!(report.morse, encode(&base.to_string()), "{letter}");
+                assert_eq!(report.skipped, vec![mark], "{letter}");
+                assert_eq!(
+                    build_signal_plan(&precomposed),
+                    build_signal_plan(&decomposed),
+                    "{letter}"
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 113);
+        for (accented, plain) in [
+            ("ÊTRE", "ETRE"),
+            ("MÚSICA", "MUSICA"),
+            ("PORTUGUÊS", "PORTUGUES"),
+            ("está", "ESTA"),
+        ] {
+            assert_eq!(encode(accented), encode(plain), "{accented}");
+        }
+        // A letter with a code of its own keeps it, with nothing reported.
+        for &(letter, code) in alphabets::LATIN_EXTENSIONS {
+            for text in [letter.to_string(), letter.to_lowercase().to_string()] {
+                let report = encode_lossy_report(&text);
+                assert_eq!(report.morse, code, "{text}");
+                assert_eq!(report.skipped, vec![], "{text}");
+            }
+        }
+        // Those codes are Latin's alone: with another alphabet the letter
+        // is sent as its base letter too, not left out whole.
+        let report = encode_lossy_report_in("É Я", Alphabet::Cyrillic);
+        assert_eq!(report.morse, ". / .-.-");
+        assert_eq!(report.skipped, vec!['\u{0301}']);
+        assert_eq!(
+            report,
+            encode_lossy_report_in("E\u{0301} Я", Alphabet::Cyrillic)
+        );
+        let report = encode_lossy_report_in("ÀÈÉÓĆŃŚŹĈĜĤĴŜÑŬŻÄÖÜÅŠÇĄĘ", Alphabet::Cyrillic);
+        assert_eq!(
+            report.morse,
+            encode_in("AEEOCNSZCGHJSNUZAOUASCAE", Alphabet::Cyrillic)
+        );
+        assert_eq!(report.skipped.len(), 24);
+        // A letter that is not a base letter and an accent is left out as
+        // before.
+        let report = encode_lossy_report("CŒUR Ħ");
+        assert_eq!(report.morse, encode("CUR"));
+        assert_eq!(report.skipped, vec!['Œ', 'Ħ']);
     }
 
     #[test]
@@ -1182,6 +1288,28 @@ mod tests {
     }
 
     #[test]
+    fn russian_hard_sign_decodes_from_its_own_code() {
+        let report = decode_lossy_report_in("--.--", Alphabet::Cyrillic);
+        assert_eq!(report.text, "Ъ");
+        assert_eq!(report.skipped, Vec::<String>::new());
+        assert_eq!(
+            decode_in("... --.-- . --.. -..", Alphabet::Cyrillic),
+            "СЪЕЗД"
+        );
+        // It is still sent with the code of Ь, which reads back as Ь.
+        assert_eq!(encode_in("Ъ", Alphabet::Cyrillic), "-..-");
+        assert_eq!(decode_in("-..-", Alphabet::Cyrillic), "Ь");
+        // The code means other letters elsewhere, and nothing in
+        // Ukrainian, which has no Ъ.
+        assert_eq!(decode("--.--"), "Ñ");
+        assert_eq!(decode_in("--.--", Alphabet::Japanese), "あ");
+        assert_eq!(
+            decode_lossy_report_in("--.--", Alphabet::Ukrainian).skipped,
+            vec!["--.--"]
+        );
+    }
+
+    #[test]
     fn signal_plan_follows_the_detected_ukrainian_alphabet() {
         assert_eq!(
             build_signal_plan("привіт"),
@@ -1202,6 +1330,27 @@ mod tests {
         assert_eq!(encode("ם"), encode("מ"));
         assert_eq!(encode("ёж"), encode("ЕЖ"));
         assert_eq!(encode("ά"), encode("Α"));
+    }
+
+    #[test]
+    fn greek_vowels_with_dialytika_and_tonos_are_sent_as_the_vowel() {
+        // ΐ and ΰ have no uppercase letter of their own: they uppercase to
+        // Ι or Υ followed by two combining marks. Like every other
+        // accented vowel they are sent as the vowel, with nothing reported.
+        for (text, plain) in [
+            ("ά", "Α"),
+            ("ϊ", "Ι"),
+            ("ΐ", "Ι"),
+            ("ΰ", "Υ"),
+            ("ταΐζω", "ΤΑΙΖΩ"),
+            ("πραΰνω", "ΠΡΑΥΝΩ"),
+        ] {
+            let report = encode_lossy_report(text);
+            assert_eq!(report.morse, encode_in(plain, Alphabet::Greek), "{text}");
+            assert_eq!(report.skipped, vec![], "{text}");
+            assert_eq!(build_signal_plan(text), build_signal_plan(plain), "{text}");
+        }
+        assert_eq!(encode("ΐ"), "..");
     }
 
     #[test]
@@ -1513,6 +1662,23 @@ mod tests {
     }
 
     #[test]
+    fn persian_hamza_seats_and_teh_marbuta_are_sent_as_their_letters() {
+        // ئ as ی, ؤ as و, and ة and ۀ as ه.
+        for (text, plain) in [
+            ("رئیس", "رییس"),
+            ("مؤثر", "موثر"),
+            ("دایرة", "دایره"),
+            ("خانۀ", "خانه"),
+        ] {
+            let report = encode_lossy_report_in(text, Alphabet::Persian);
+            assert_eq!(report.morse, encode_in(plain, Alphabet::Persian), "{text}");
+            assert_eq!(report.skipped, vec![], "{text}");
+        }
+        assert_eq!(Alphabet::detect("رئیس"), Alphabet::Persian);
+        assert_eq!(encode("رئیس"), ".-. .. .. ...");
+    }
+
+    #[test]
     fn zero_width_non_joiner_is_ignored() {
         let text = "می\u{200C}خواهم";
         assert_eq!(Alphabet::detect(text), Alphabet::Persian);
@@ -1525,6 +1691,72 @@ mod tests {
         assert_eq!(report.morse, ".- -...");
         assert_eq!(report.skipped, vec![]);
         assert_eq!(build_signal_plan(text), build_signal_plan("میخواهم"));
+    }
+
+    #[test]
+    fn invisible_format_characters_are_ignored() {
+        // A byte order mark, a soft hyphen, zero-width characters,
+        // directional marks and the word joiner: none of them is a letter,
+        // part of a code or a word break.
+        for c in [
+            '\u{FEFF}', '\u{00AD}', '\u{200B}', '\u{200C}', '\u{200D}', '\u{200E}', '\u{200F}',
+            '\u{202A}', '\u{202E}', '\u{2060}', '\u{2066}', '\u{2069}',
+        ] {
+            let name = format!("U+{:04X}", c as u32);
+            let report = encode_lossy_report(&format!("{c}S{c}O{c}S{c} {c}"));
+            assert_eq!(report.morse, "... --- ...", "{name}");
+            assert_eq!(report.skipped, vec![], "{name}");
+            let report = decode_lossy_report(&format!("{c}... -{c}-- ...{c} / {c}"));
+            assert_eq!(report.text, "SOS", "{name}");
+            assert_eq!(report.skipped, Vec::<String>::new(), "{name}");
+        }
+        // A file saved "with BOM" starts with one.
+        assert_eq!(decode("\u{FEFF}... --- ..."), "SOS");
+        assert_eq!(
+            decode_in("\u{FEFF}.- -...", Alphabet::Cyrillic),
+            decode_in(".- -...", Alphabet::Cyrillic)
+        );
+        assert_eq!(
+            build_signal_plan("\u{FEFF}S\u{200B}OS"),
+            build_signal_plan("SOS")
+        );
+    }
+
+    #[test]
+    fn typographic_punctuation_is_sent_as_its_ascii_form() {
+        for (typed, ascii) in [
+            // Curly and low quotes, and the apostrophe letter.
+            ("DON\u{2019}T", "DON'T"),
+            ("\u{2018}HI\u{2019}", "'HI'"),
+            ("П\u{02BC}ЯТЬ", "П'ЯТЬ"),
+            ("\u{201C}HI\u{201D} \u{201E}HI\u{201C}", "\"HI\" \"HI\""),
+            // Hyphen, non-breaking hyphen, en dash, em dash, minus sign.
+            (
+                "A\u{2010}B\u{2011}C\u{2013}D\u{2014}E\u{2212}F",
+                "A-B-C-D-E-F",
+            ),
+            // Horizontal ellipsis.
+            ("WAIT\u{2026}", "WAIT..."),
+            // Arabic question mark, comma and semicolon.
+            ("سلام\u{061F} سلام\u{060C} سلام\u{061B}", "سلام? سلام, سلام;"),
+            // Full-width forms.
+            ("ＳＯＳ　１２３！", "SOS 123!"),
+            ("ｓｏｓ＠ｑｔｈ．ｎｅｔ", "SOS@QTH.NET"),
+            ("ＣＱ＜ＡＲ＞　５０％", "CQ<AR> 50%"),
+        ] {
+            let report = encode_lossy_report(typed);
+            assert_eq!(report.morse, encode(ascii), "{typed}");
+            assert_eq!(report.skipped, vec![], "{typed}");
+            assert_eq!(
+                build_signal_plan(typed),
+                build_signal_plan(ascii),
+                "{typed}"
+            );
+        }
+        assert_eq!(encode("DON\u{2019}T"), "-.. --- -. .----. -");
+        // Full-width brackets are Wabun's own, with codes of their own.
+        assert_eq!(encode("（"), "-.--.-");
+        assert_eq!(encode("("), "-.--.");
     }
 
     #[test]
@@ -1598,6 +1830,42 @@ mod tests {
     }
 
     #[test]
+    fn international_table_has_one_code_per_character() {
+        // HashMap::from keeps one of two entries for the same character,
+        // so the size is checked too: 26 letters, 10 digits and 18
+        // punctuation marks.
+        assert_eq!(TABLE.len(), 54);
+        let mut by_code: HashMap<&str, char> = HashMap::new();
+        for (&c, &code) in TABLE.iter() {
+            if let Some(other) = by_code.insert(code, c) {
+                panic!("{c} and {other} share {code}");
+            }
+        }
+        // Whatever else is sent with the code of a table character is so
+        // on purpose, and is named here: the multiplication sign, and the
+        // prosigns that fuse into the code of a punctuation mark.
+        let expected = [
+            ("<AR>", '+'),
+            ("<AS>", '&'),
+            ("<BT>", '='),
+            ("<KN>", '('),
+            ("×", 'X'),
+        ];
+        let mut shared: Vec<(String, char)> = PROSIGNS
+            .iter()
+            .map(|(&name, &code)| (format!("<{name}>"), code))
+            .chain(ENCODE_ONLY.iter().map(|&(c, code)| (c.to_string(), code)))
+            .filter_map(|(name, code)| by_code.get(code).map(|&c| (name, c)))
+            .collect();
+        shared.sort();
+        let expected: Vec<(String, char)> = expected
+            .iter()
+            .map(|&(name, c)| (name.to_string(), c))
+            .collect();
+        assert_eq!(shared, expected);
+    }
+
+    #[test]
     fn latin_decode_extensions_use_codes_nothing_else_does() {
         let mut seen = std::collections::HashSet::new();
         for &(code, text) in alphabets::LATIN_DECODE_EXTENSIONS {
@@ -1646,9 +1914,11 @@ mod tests {
         // code it came from, and decode to itself again. The exceptions
         // are by design: Hebrew writes כ מ נ פ צ in their final form at
         // the end of a word, and a lone letter is a word; CH is sent as
-        // the two letters C and H, not with its own code.
+        // the two letters C and H, not with its own code; Russian Ъ is
+        // read from its own code but sent with the code of Ь.
         let expected: &[(Alphabet, &str, &str, &str)] = &[
             (Alphabet::Latin, "----", "CH", "-.-. ...."),
+            (Alphabet::Cyrillic, "--.--", "Ъ", "-..-"),
             (Alphabet::Hebrew, "-.-", "כ", "ך"),
             (Alphabet::Hebrew, "--", "מ", "ם"),
             (Alphabet::Hebrew, "-.", "נ", "ן"),
