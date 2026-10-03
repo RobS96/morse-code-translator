@@ -12,9 +12,10 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use morse_core::{
-    Alphabet, MAX_FREQUENCY_HZ, MAX_UNIT_MS, MIN_FREQUENCY_HZ, MIN_UNIT_MS, StepKind, Timing, Tone,
-    UNIT_MS, build_schedule, build_signal_plan_in, decode_lossy_report_in, encode_lossy_report_in,
-    render_samples, wpm_to_unit_ms, write_wav,
+    Alphabet, MAX_FREQUENCY_HZ, MAX_UNIT_MS, MIN_FREQUENCY_HZ, MIN_UNIT_MS, Signal, StepKind,
+    Timing, Tone, UNIT_MS, build_schedule, build_signal_plan_from_morse, build_signal_plan_in,
+    decode_lossy_report_in, encode_lossy_report_in, morse_lossy_report, render_samples,
+    wpm_to_unit_ms, write_wav,
 };
 
 /// Exit code for a command line that could not be understood.
@@ -50,6 +51,11 @@ fn usage(prog: &str) -> String {
          {prog} alphabets                List the supported Morse alphabets\n\n\
          Options may come before or after the text. With no text argument, the\n\
          text is read from standard input, unless that is a terminal.\n\n\
+         `--` after the command ends the options: everything after it is the\n\
+         text, even if it looks like an option, several arguments joined with\n\
+         spaces. As `--` is also the Morse for M, only the first `--` after the\n\
+         command ends them, and only if something follows it: `decode --` and\n\
+         `decode -- --` both decode M, and `decode -- -- --` decodes `-- --`.\n\n\
          Options (encode/decode/transmit/wav):\n  \
          -a, --alphabet <NAME>       latin, cyrillic (Russian), ukrainian, greek,\n  \
          {pad:28}hebrew, arabic, persian, japanese (Wabun) or\n  \
@@ -60,6 +66,10 @@ fn usage(prog: &str) -> String {
          {pad:28}ы э ъ ё; otherwise pass -a uk for Ukrainian.\n\n\
          Options (encode/decode/wav):\n  \
          --strict                    Exit with code {EXIT_LOSSY} if anything was left out\n\n\
+         Options (transmit/wav):\n  \
+         --morse                     The text is Morse: send it exactly as written,\n  \
+         {pad:28}codes no alphabet knows included, instead of\n  \
+         {pad:28}encoding it (-a then has no effect)\n\n\
          Timing options (transmit/wav):\n  \
          -u, --unit-ms <MS>          Character unit length in ms (default {UNIT_MS})\n  \
          -g, --gap-unit-ms <MS>      Letter/word gap unit length in ms (default: the\n  \
@@ -94,9 +104,12 @@ fn usage(prog: &str) -> String {
          {prog} encode \"привет\"\n  \
          {prog} decode \".--. .-. .. .-- . -\" --alphabet cyrillic\n  \
          {prog} decode \".--. .-. -.-- .-- .. -\" -a uk\n  \
+         {prog} encode -- -h\n  \
+         {prog} decode -- -- --\n  \
          echo \"SOS\" | {prog} encode --strict\n  \
          {prog} transmit \"HELLO WORLD\" --wpm 20\n  \
          {prog} transmit --wpm 20 --farnsworth-wpm 5 \"HELLO WORLD\"\n  \
+         {prog} transmit --morse \"---- / .-\"\n  \
          {prog} wav \"PARIS PARIS\" -o paris.wav --wpm 20 --tone 700\n",
         pad = ""
     )
@@ -125,7 +138,7 @@ fn is_option(arg: &str) -> bool {
     value_flag(arg).is_some()
         || matches!(
             arg,
-            "-h" | "--help" | "-V" | "--version" | "--strict" | "--force"
+            "-h" | "--help" | "-V" | "--version" | "--strict" | "--force" | "--morse"
         )
 }
 
@@ -155,6 +168,8 @@ struct Request {
     text: Option<String>,
     strict: bool,
     force: bool,
+    /// `--morse`: `text` is Morse to send as written, not text to encode.
+    morse: bool,
     alphabet: Option<(String, String)>,
     unit_ms: Option<(String, String)>,
     gap_unit_ms: Option<(String, String)>,
@@ -174,15 +189,32 @@ struct Request {
 /// option, so `--wpm -5` reaches the range check while a forgotten value
 /// (`--wpm --alphabet latin`, or `--wpm` last) is reported as missing.
 /// When an option is repeated the last value wins.
+///
+/// `--` ends the options, so that text such as `-h` can be given: every
+/// argument after it is text, joined with single spaces as if quoted
+/// together. Because `--` is also the Morse for M, an argument `--` is
+/// that end-of-options marker only when it comes after the command, is the
+/// first `--` there, and has something after it. So `decode --` still
+/// decodes M, `decode -- --` does too, and `decode -- -- --` decodes
+/// `-- --`. An option's value is taken before this, so `-o --` names a file
+/// `--`, and a `--` before the command is taken as the command.
 fn parse_args(args: &[String]) -> Result<Invocation, String> {
-    let mut positionals: Vec<&str> = Vec::new();
+    let mut positionals: Vec<String> = Vec::new();
     let mut values: Vec<(&'static str, String, String)> = Vec::new();
     let mut version = false;
     let mut strict = false;
     let mut force = false;
+    let mut morse = false;
 
-    let mut it = args.iter().map(String::as_str);
+    let mut it = args.iter().map(String::as_str).peekable();
     while let Some(arg) = it.next() {
+        // A `--` before the command, or one with nothing after it, is
+        // positional below. Once one has ended the options, the loop is
+        // over, so no later `--` can.
+        if arg == "--" && !positionals.is_empty() && it.peek().is_some() {
+            positionals.push(it.by_ref().collect::<Vec<_>>().join(" "));
+            break;
+        }
         if matches!(arg, "-h" | "--help") {
             return Ok(Invocation::Help);
         }
@@ -192,6 +224,8 @@ fn parse_args(args: &[String]) -> Result<Invocation, String> {
             strict = true;
         } else if arg == "--force" {
             force = true;
+        } else if arg == "--morse" {
+            morse = true;
         } else if let Some(name) = value_flag(arg) {
             match it.next() {
                 Some(value) if !is_option(value) => {
@@ -208,7 +242,7 @@ fn parse_args(args: &[String]) -> Result<Invocation, String> {
             }
             values.push((name, flag.to_string(), value.to_string()));
         } else {
-            positionals.push(arg);
+            positionals.push(arg.to_string());
         }
     }
     if version {
@@ -216,7 +250,7 @@ fn parse_args(args: &[String]) -> Result<Invocation, String> {
     }
 
     let mut positionals = positionals.into_iter();
-    let command = match positionals.next() {
+    let command = match positionals.next().as_deref() {
         None => return Err("missing command".to_string()),
         Some("encode") => Command::Encode,
         Some("decode") => Command::Decode,
@@ -239,6 +273,10 @@ fn parse_args(args: &[String]) -> Result<Invocation, String> {
     if strict && command == Command::Transmit {
         return Err("--strict applies to encode, decode and wav only".to_string());
     }
+    // encode and decode already take Morse or text by their nature.
+    if morse && matches!(command, Command::Encode | Command::Decode) {
+        return Err("--morse applies to transmit and wav only".to_string());
+    }
 
     let value = |name: &str| {
         values
@@ -259,9 +297,10 @@ fn parse_args(args: &[String]) -> Result<Invocation, String> {
     }
     Ok(Invocation::Run(Box::new(Request {
         command,
-        text: text.map(str::to_string),
+        text,
         strict,
         force,
+        morse,
         alphabet: value("--alphabet"),
         unit_ms: value("--unit-ms"),
         gap_unit_ms: value("--gap-unit-ms"),
@@ -493,6 +532,22 @@ fn dropped_warning(skipped: &[char]) -> Option<String> {
 /// One-line warning naming each distinct unrecognised code once (the
 /// first [`LISTED`] of them), or `None` if every code was recognised.
 fn unrecognised_warning(skipped: &[String], alphabet: Alphabet) -> Option<String> {
+    codes_warning(
+        skipped,
+        &format!("not recognised in the {} alphabet", alphabet.id()),
+    )
+}
+
+/// One-line warning naming each distinct code `--morse` could not send
+/// once (the first [`LISTED`] of them), or `None` if every code was sent.
+fn not_morse_warning(skipped: &[String]) -> Option<String> {
+    codes_warning(skipped, "with characters other than dots and dashes")
+}
+
+/// One-line warning that the codes `skipped` were left out for the reason
+/// `why`, naming each distinct one once (the first [`LISTED`] of them), or
+/// `None` if `skipped` is empty.
+fn codes_warning(skipped: &[String], why: &str) -> Option<String> {
     let distinct = each_once(skipped);
     if distinct.is_empty() {
         return None;
@@ -506,13 +561,12 @@ fn unrecognised_warning(skipped: &[String], alphabet: Alphabet) -> Option<String
         list.push(format!("and {} more", distinct.len() - LISTED));
     }
     Some(format!(
-        "morse: warning: left out {} not recognised in the {} alphabet: {}",
+        "morse: warning: left out {} {why}: {}",
         if skipped.len() == 1 {
             "1 code".to_string()
         } else {
             format!("{} codes", skipped.len())
         },
-        alphabet.id(),
         list.join(", ")
     ))
 }
@@ -670,7 +724,12 @@ fn run(
             Job::Wav(timing, wav)
         }
     };
-    let Request { text, strict, .. } = *request;
+    let Request {
+        text,
+        strict,
+        morse,
+        ..
+    } = *request;
     let text = match text {
         Some(text) => text,
         None => {
@@ -682,6 +741,14 @@ fn run(
         }
     };
     let text_alphabet = || alphabet.unwrap_or_else(|| Alphabet::detect(&text));
+    // What transmit and wav send; -a has nothing to choose under --morse.
+    let source = || {
+        if morse {
+            Source::Morse
+        } else {
+            Source::Text(text_alphabet())
+        }
+    };
 
     match job {
         Job::Encode => {
@@ -705,12 +772,55 @@ fn run(
                 strict && !report.skipped.is_empty(),
             )
         }
-        Job::Transmit(timing) => Ok(transmit(out, &text, timing, text_alphabet(), sleep)?),
-        Job::Wav(timing, wav) => write_wav_file(out, &text, timing, text_alphabet(), &wav, strict),
+        Job::Transmit(timing) => Ok(transmit(out, &text, timing, source(), sleep)?),
+        Job::Wav(timing, wav) => write_wav_file(out, &text, timing, source(), &wav, strict),
     }
 }
 
-/// Play a text message out as visual flashes + terminal-bell beeps, timed
+/// What `transmit` and `wav` are given: text to encode in an alphabet, or
+/// (under `--morse`) Morse to send as written.
+#[derive(Debug, Clone, Copy)]
+enum Source {
+    Text(Alphabet),
+    Morse,
+}
+
+/// The input of `transmit` or `wav` made ready to send.
+struct Keyed {
+    /// The Morse that is sent, as `encode` writes it.
+    morse: String,
+    /// The signal plan that sends it.
+    plan: Vec<Signal>,
+    /// True if part of the input was left out.
+    lossy: bool,
+}
+
+/// Work out what `input` is sent as from `source`, warning on stderr about
+/// anything left out: characters with no code, or under `--morse` codes
+/// that are not dots and dashes. Morse is sent as written, never decoded
+/// and encoded again, so a code that no alphabet knows is sent too.
+fn keyed(input: &str, source: Source) -> Keyed {
+    let (morse, plan, skipped_warning) = match source {
+        Source::Text(alphabet) => {
+            let report = encode_lossy_report_in(input, alphabet);
+            let warning = dropped_warning(&report.skipped);
+            (report.morse, build_signal_plan_in(input, alphabet), warning)
+        }
+        Source::Morse => {
+            let report = morse_lossy_report(input);
+            let warning = not_morse_warning(&report.skipped);
+            (report.morse, build_signal_plan_from_morse(input), warning)
+        }
+    };
+    let lossy = skipped_warning.is_some();
+    if let Some(warning) = skipped_warning {
+        warn(&warning);
+    }
+    Keyed { morse, plan, lossy }
+}
+
+/// Play a text message (or, from [`Source::Morse`], Morse as written) out
+/// as visual flashes + terminal-bell beeps, timed
 /// by the core schedule: standard Morse ratios (dot=1u, dash=3u, gaps
 /// 1u/3u/7u for symbol/letter/word) or, under Farnsworth `timing`, with
 /// letter/word gaps stretched independently of character speed. Each
@@ -722,7 +832,7 @@ fn transmit(
     out: &mut impl Write,
     text: &str,
     timing: Timing,
-    alphabet: Alphabet,
+    source: Source,
     mut pause: impl FnMut(Duration),
 ) -> io::Result<()> {
     if timing.gap_unit_ms == timing.char_unit_ms {
@@ -738,13 +848,10 @@ fn transmit(
             timing.char_unit_ms, timing.gap_unit_ms
         )?;
     }
-    let report = encode_lossy_report_in(text, alphabet);
-    if let Some(warning) = dropped_warning(&report.skipped) {
-        warn(&warning);
-    }
-    writeln!(out, "{}", report.morse)?;
+    let keyed = keyed(text, source);
+    writeln!(out, "{}", keyed.morse)?;
 
-    for step in build_schedule(&build_signal_plan_in(text, alphabet), timing) {
+    for step in build_schedule(&keyed.plan, timing) {
         let duration = Duration::from_millis(step.duration_ms);
         if step.is_tone() {
             // \x07 = terminal bell (audible beep in most terminal apps).
@@ -776,30 +883,28 @@ fn already_exists(path: &Path) -> String {
     )
 }
 
-/// Render `text` to the WAV file `wav` names and report it on `out`.
-/// Dropped characters are warned about, and count under `strict`, as for
-/// `encode`; the file is written either way.
+/// Render `text` (or, from [`Source::Morse`], Morse as written) to the WAV
+/// file `wav` names and report it on `out`. What was left out is warned
+/// about, and counts under `strict`, as for `encode`; the file is written
+/// either way.
 fn write_wav_file(
     out: &mut impl Write,
     text: &str,
     timing: Timing,
-    alphabet: Alphabet,
+    source: Source,
     wav: &WavOutput,
     strict: bool,
 ) -> Result<(), Failure> {
-    let report = encode_lossy_report_in(text, alphabet);
-    if let Some(warning) = dropped_warning(&report.skipped) {
-        warn(&warning);
-    }
+    let keyed = keyed(text, source);
     let path = wav.path.display();
     let rate = wav.tone.sample_rate;
-    let samples = render_samples(&build_signal_plan_in(text, alphabet), timing, &wav.tone)
+    let samples = render_samples(&keyed.plan, timing, &wav.tone)
         .map_err(|err| Failure::File(format!("cannot write {path}: {err}")))?;
     save_wav(&wav.path, wav.force, &samples, rate).map_err(Failure::File)?;
     let seconds = samples.len() as f64 / f64::from(rate);
     translated(
         writeln!(out, "Wrote {path} ({seconds:.2} s, {rate} Hz, 16-bit mono)"),
-        strict && !report.skipped.is_empty(),
+        strict && keyed.lossy,
     )
 }
 
@@ -951,6 +1056,96 @@ mod tests {
     }
 
     #[test]
+    fn double_dash_after_the_command_ends_the_options() {
+        let text = |rest: &[&str]| request(rest).text;
+        assert_eq!(text(&["encode", "--", "-h"]).as_deref(), Some("-h"));
+        assert_eq!(text(&["encode", "--", "-V"]).as_deref(), Some("-V"));
+        let parsed = request(&["encode", "--", "--strict"]);
+        assert_eq!(parsed.text.as_deref(), Some("--strict"));
+        assert!(!parsed.strict);
+        assert_eq!(
+            text(&["decode", "--", ".- -..."]).as_deref(),
+            Some(".- -...")
+        );
+        // Everything after it is the text, several arguments joined with
+        // a space as if quoted together.
+        assert_eq!(
+            text(&["encode", "--", "-a", "ru", "--wpm"]).as_deref(),
+            Some("-a ru --wpm")
+        );
+        // Options before it still apply, wherever the command is.
+        let parsed = request(&["-a", "ru", "decode", "--strict", "--", "--.--"]);
+        assert_eq!(parsed.text.as_deref(), Some("--.--"));
+        assert!(parsed.strict);
+        assert_eq!(resolve_alphabet(&parsed), Ok(Some(Alphabet::Cyrillic)));
+        // Text before it and text after it are two pieces of text.
+        let err = parse_args(&args(&["encode", "SOS", "--", "-h"])).unwrap_err();
+        assert!(err.contains("unexpected argument \"-h\""), "{err}");
+    }
+
+    #[test]
+    fn double_dash_is_the_morse_for_m_unless_it_ends_the_options() {
+        let text = |rest: &[&str]| request(rest).text;
+        // With nothing after it, it is the text, as it always was.
+        assert_eq!(text(&["decode", "--"]).as_deref(), Some("--"));
+        assert_eq!(text(&["decode", "-a", "ru", "--"]).as_deref(), Some("--"));
+        assert_eq!(text(&["--strict", "decode", "--"]).as_deref(), Some("--"));
+        // Only the first one after the command ends the options.
+        assert_eq!(text(&["decode", "--", "--"]).as_deref(), Some("--"));
+        assert_eq!(
+            text(&["decode", "--", "--", "--"]).as_deref(),
+            Some("-- --")
+        );
+        // Before the command it ends nothing: it is taken as the command.
+        let err = parse_args(&args(&["--", "decode", "..."])).unwrap_err();
+        assert!(err.contains("unknown command \"--\""), "{err}");
+        // An option's value is the value, as before.
+        assert_eq!(
+            request(&["wav", "SOS", "-o", "--"]).output,
+            Some(("-o".to_string(), "--".to_string()))
+        );
+        assert_eq!(
+            request(&["wav", "-o", "--", "--"]).text.as_deref(),
+            Some("--")
+        );
+    }
+
+    #[test]
+    fn morse_flag_belongs_to_transmit_and_wav() {
+        assert!(request(&["transmit", "--morse", "..."]).morse);
+        assert!(request(&["wav", "...", "-o", "x.wav", "--morse"]).morse);
+        assert!(!request(&["transmit", "..."]).morse);
+        for line in [
+            &["encode", "--morse", "SOS"][..],
+            &["decode", "...", "--morse"][..],
+        ] {
+            let err = parse_args(&args(line)).unwrap_err();
+            assert!(
+                err.contains("--morse applies to transmit and wav only"),
+                "{line:?}: {err}"
+            );
+        }
+        // It is an option, so not the value of the one before it.
+        let err = parse_args(&args(&["transmit", "...", "-a", "--morse"])).unwrap_err();
+        assert!(err.contains("expects a value"), "{err}");
+        // After `--` it is text.
+        let parsed = request(&["transmit", "--", "--morse"]);
+        assert_eq!(parsed.text.as_deref(), Some("--morse"));
+        assert!(!parsed.morse);
+        // Morse for M after it, with or without the end of the options.
+        assert_eq!(
+            request(&["transmit", "--morse", "--"]).text.as_deref(),
+            Some("--")
+        );
+        assert_eq!(
+            request(&["transmit", "--morse", "--", "--", "--"])
+                .text
+                .as_deref(),
+            Some("-- --")
+        );
+    }
+
+    #[test]
     fn flag_missing_its_value_is_a_usage_error() {
         for line in [
             &["transmit", "SOS", "--wpm"][..],
@@ -1085,7 +1280,7 @@ mod tests {
             &mut Closed,
             "PARIS PARIS",
             Timing::uniform(MAX_UNIT_MS),
-            Alphabet::Latin,
+            Source::Text(Alphabet::Latin),
             sleep,
         )
         .unwrap_err();
@@ -1095,7 +1290,14 @@ mod tests {
     #[test]
     fn transmit_writes_the_header_the_morse_and_one_flash_per_symbol() {
         let mut out = Vec::new();
-        transmit(&mut out, "E T", Timing::uniform(1), Alphabet::Latin, sleep).unwrap();
+        transmit(
+            &mut out,
+            "E T",
+            Timing::uniform(1),
+            Source::Text(Alphabet::Latin),
+            sleep,
+        )
+        .unwrap();
         let out = String::from_utf8(out).unwrap();
         assert!(out.starts_with("Transmitting \"E T\" @ 1ms/unit\n\n. / -\n"));
         assert_eq!(out.matches('\x07').count(), 2);
@@ -1106,9 +1308,13 @@ mod tests {
     fn transmit_waits_out_exactly_the_core_schedule() {
         let waited = |text: &str, timing: Timing| {
             let mut pauses = Vec::new();
-            transmit(&mut Vec::new(), text, timing, Alphabet::Latin, |pause| {
-                pauses.push(pause.as_millis() as u64)
-            })
+            transmit(
+                &mut Vec::new(),
+                text,
+                timing,
+                Source::Text(Alphabet::Latin),
+                |pause| pauses.push(pause.as_millis() as u64),
+            )
             .unwrap();
             pauses
         };
@@ -1131,13 +1337,63 @@ mod tests {
     }
 
     #[test]
+    fn transmit_keys_morse_as_written_under_the_morse_flag() {
+        let mut pauses = Vec::new();
+        let mut out = Vec::new();
+        transmit(
+            &mut out,
+            "---- / .- ..--..--",
+            Timing::uniform(1),
+            Source::Morse,
+            |pause| pauses.push(pause.as_millis() as u64),
+        )
+        .unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.starts_with(
+                "Transmitting \"---- / .- ..--..--\" @ 1ms/unit\n\n---- / .- ..--..--\n"
+            ),
+            "{out:?}"
+        );
+        // Four dashes, not the five symbols of CH; the code no alphabet
+        // knows is sent too.
+        assert_eq!(out.matches('\x07').count(), 4 + 2 + 8);
+        let expected: Vec<u64> = build_schedule(
+            &build_signal_plan_from_morse("---- / .- ..--..--"),
+            Timing::uniform(1),
+        )
+        .iter()
+        .map(|step| step.duration_ms)
+        .collect();
+        assert_eq!(pauses, expected);
+    }
+
+    #[test]
+    fn left_out_morse_warning_names_codes_that_are_not_dots_and_dashes() {
+        let codes = |list: &[&str]| -> Vec<String> { list.iter().map(|s| s.to_string()).collect() };
+        assert_eq!(not_morse_warning(&[]), None);
+        assert_eq!(
+            not_morse_warning(&codes(&["hello"])).unwrap(),
+            "morse: warning: left out 1 code with characters other than dots and dashes: \
+             \"hello\""
+        );
+        assert!(
+            not_morse_warning(&codes(&["a", "b", "a"]))
+                .unwrap()
+                .contains(
+                    "left out 3 codes with characters other than dots and dashes: \"a\", \"b\""
+                )
+        );
+    }
+
+    #[test]
     fn transmit_starts_a_new_line_at_each_word_gap() {
         let mut out = Vec::new();
         transmit(
             &mut out,
             "EE E E",
             Timing::uniform(1),
-            Alphabet::Latin,
+            Source::Text(Alphabet::Latin),
             |_| {},
         )
         .unwrap();

@@ -853,3 +853,154 @@ fn transmit_prints_the_morse_and_finishes() {
     assert!(out.contains("\n. / .\n"), "{out:?}");
     assert_eq!(stderr(&output), "");
 }
+
+#[test]
+fn double_dash_ends_the_options_so_text_may_look_like_one() {
+    // `-h` and `--strict` as text: `-` is `-....-`, H `....`.
+    let output = morse(&["encode", "--", "-h"]);
+    assert_exit(&output, 0);
+    assert_eq!(stdout(&output), "-....- ....\n");
+    assert_eq!(stderr(&output), "");
+    let output = morse(&["encode", "--", "--strict"]);
+    assert_exit(&output, 0);
+    assert_eq!(stdout(&output), "-....- -....- ... - .-. .. -.-. -\n");
+    assert_eq!(stderr(&output), "");
+    // Options before it still apply.
+    let output = morse(&["encode", "--strict", "--", "-~"]);
+    assert_exit(&output, 2);
+    assert_eq!(stdout(&output), "-....-\n");
+
+    let output = morse(&["decode", "--", ".- -..."]);
+    assert_exit(&output, 0);
+    assert_eq!(stdout(&output), "AB\n");
+    // Ъ's code starts with `--`, which used to be taken as a second text.
+    let output = morse(&["decode", "-a", "ru", "--", "--.--"]);
+    assert_exit(&output, 0);
+    assert_eq!(stdout(&output), "Ъ\n");
+    assert_eq!(stderr(&output), "");
+}
+
+#[test]
+fn double_dash_on_its_own_is_still_the_morse_for_m() {
+    for args in [
+        &["decode", "--"][..],
+        &["decode", "--", "--"][..],
+        &["-a", "latin", "decode", "--"][..],
+    ] {
+        let output = morse(args);
+        assert_exit(&output, 0);
+        assert_eq!(stdout(&output), "M\n", "{args:?}");
+        assert_eq!(stderr(&output), "", "{args:?}");
+    }
+    // Only the first `--` after the command ends the options.
+    let output = morse(&["decode", "--", "--", "--"]);
+    assert_exit(&output, 0);
+    assert_eq!(stdout(&output), "MM\n");
+    let output = morse(&["decode", "--", "--", "/", "--"]);
+    assert_exit(&output, 0);
+    assert_eq!(stdout(&output), "M M\n");
+}
+
+#[test]
+fn help_explains_the_end_of_the_options() {
+    let usage = stdout(&morse(&["--help"]));
+    assert!(usage.contains("--morse"), "{usage}");
+    assert!(usage.contains("encode -- -h"), "{usage}");
+    assert!(usage.contains("decode -- -- --"), "{usage}");
+}
+
+#[test]
+fn transmit_and_wav_send_morse_as_written_under_the_morse_flag() {
+    let output = morse(&["transmit", "--morse", "---- / .-", "-u", "1"]);
+    assert_exit(&output, 0);
+    assert_eq!(stderr(&output), "");
+    let out = stdout(&output);
+    assert!(out.contains("\n---- / .-\n"), "{out:?}");
+    // Six tones: the four dashes typed, not the five symbols of CH.
+    assert_eq!(out.matches('\x07').count(), 6);
+
+    let scratch = Scratch::new("wav-morse");
+    let file = |name: &str| scratch.path(name);
+    // `----`: four dashes and three symbol gaps, 15 units.
+    let output = morse(&[
+        "wav",
+        "--morse",
+        "----",
+        "-o",
+        &file("dashes.wav"),
+        "-u",
+        "10",
+    ]);
+    assert_exit(&output, 0);
+    assert_eq!(read_wav(&file("dashes.wav")).samples.len(), 15 * 441);
+    // A code no alphabet knows is sent all the same: 4 + 12 + 7 units.
+    let output = morse(&[
+        "wav",
+        "--morse",
+        "..--..--",
+        "-o",
+        &file("unknown.wav"),
+        "-u",
+        "10",
+    ]);
+    assert_exit(&output, 0);
+    assert_eq!(stderr(&output), "");
+    assert_eq!(read_wav(&file("unknown.wav")).samples.len(), 23 * 441);
+    // Look-alikes read as decode reads them; `--` after `--` is Morse.
+    let output = morse(&[
+        "wav",
+        "--morse",
+        "-o",
+        &file("m.wav"),
+        "-u",
+        "10",
+        "--",
+        "—— ——",
+    ]);
+    assert_exit(&output, 0);
+    // M M in one word: 7 + 3 + 7 units.
+    assert_eq!(read_wav(&file("m.wav")).samples.len(), 17 * 441);
+    let output = morse(&[
+        "wav",
+        "--morse",
+        "-o",
+        &file("mm.wav"),
+        "-u",
+        "10",
+        "--",
+        "--",
+        "--",
+    ]);
+    assert_exit(&output, 0);
+    assert_eq!(read_wav(&file("mm.wav")).samples.len(), 17 * 441);
+}
+
+#[test]
+fn morse_flag_warns_about_what_cannot_be_sent() {
+    let output = morse(&["transmit", "--morse", ". hello", "-u", "1"]);
+    assert_exit(&output, 0);
+    assert_eq!(
+        stderr(&output),
+        "morse: warning: left out 1 code with characters other than dots and dashes: \"hello\"\n"
+    );
+    assert_eq!(stdout(&output).matches('\x07').count(), 1);
+
+    let scratch = Scratch::new("wav-morse-strict");
+    let file = scratch.path("e.wav");
+    let output = morse(&[
+        "wav", "--morse", ". SOS", "-o", &file, "--strict", "-u", "10",
+    ]);
+    assert_exit(&output, 2);
+    assert!(stderr(&output).contains("\"SOS\""), "{}", stderr(&output));
+    // The file is written either way.
+    assert_eq!(read_wav(&file).samples.len(), 441);
+
+    for args in [
+        &["encode", "--morse", "SOS"][..],
+        &["decode", "--morse", "..."][..],
+    ] {
+        let output = morse(args);
+        assert_exit(&output, 1);
+        assert!(stderr(&output).contains("--morse applies to transmit and wav only"));
+    }
+}

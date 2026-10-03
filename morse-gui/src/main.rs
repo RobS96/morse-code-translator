@@ -23,8 +23,8 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use i18n::{Lang, Msg, tr};
 use morse_core::{
-    Alphabet, ScheduleStep, Timing, build_schedule, build_signal_plan_in, decode_in,
-    decode_lossy_report_in, encode, encode_lossy_report_in, render_schedule,
+    Alphabet, ScheduleStep, Signal, Timing, build_schedule, build_signal_plan_from_morse,
+    build_signal_plan_in, decode_lossy_report_in, encode, encode_lossy_report_in, render_schedule,
 };
 use rodio::buffer::SamplesBuffer;
 use rodio::{ChannelCount, DeviceSinkBuilder, MixerDeviceSink, Player, SampleRate};
@@ -193,15 +193,20 @@ impl MorseApp {
         self.recompute();
     }
 
+    /// What Transmit sends: on the Encode tab the text, in its alphabet; on
+    /// the Decode tab the Morse exactly as typed. Decoding it and sending
+    /// the text instead would key a different code wherever the decoded
+    /// letter has a code of its own (`----` is CH, sent as `-.-. ....`)
+    /// and leave out every code the alphabet does not know.
+    fn transmission_plan(&self) -> Vec<Signal> {
+        match self.mode {
+            Mode::Encode => build_signal_plan_in(&self.input, self.effective_alphabet()),
+            Mode::Decode => build_signal_plan_from_morse(&self.input),
+        }
+    }
+
     fn spawn_transmission(&mut self) {
-        // Transmission always plays the *text* form, so decode first if
-        // the user has Morse loaded on the Decode tab.
-        let alphabet = self.effective_alphabet();
-        let text = match self.mode {
-            Mode::Encode => self.input.clone(),
-            Mode::Decode => decode_in(&self.input, alphabet),
-        };
-        let schedule = build_schedule(&build_signal_plan_in(&text, alphabet), self.timing());
+        let schedule = build_schedule(&self.transmission_plan(), self.timing());
         if schedule.is_empty() {
             return;
         }
@@ -557,3 +562,49 @@ impl MorseApp {
 
 #[cfg(test)]
 mod layout_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use morse_core::Signal::{Dash, Dot, LetterGap, WordGap};
+
+    fn loaded(mode: Mode, input: &str) -> MorseApp {
+        let mut app = MorseApp {
+            mode,
+            input: input.to_string(),
+            ..Default::default()
+        };
+        app.recompute();
+        app
+    }
+
+    #[test]
+    fn decode_tab_transmits_the_morse_typed_not_a_re_encoding() {
+        // `----` reads as CH in Latin, whose own code is `-.-. ....`; the
+        // four dashes typed are what is sent.
+        let app = loaded(Mode::Decode, "---- / .-");
+        assert_eq!(app.output, "CH A");
+        assert_eq!(
+            app.transmission_plan(),
+            vec![Dash, Dash, Dash, Dash, LetterGap, WordGap, Dot, Dash]
+        );
+        // A code the alphabet does not know is left out of the result but
+        // still sent.
+        let app = loaded(Mode::Decode, ". ..--..--");
+        assert_eq!(app.output, "E");
+        assert!(!app.left_out.is_empty());
+        assert_eq!(
+            app.transmission_plan(),
+            vec![Dot, LetterGap, Dot, Dot, Dash, Dash, Dot, Dot, Dash, Dash]
+        );
+    }
+
+    #[test]
+    fn encode_tab_transmits_the_text_in_its_alphabet() {
+        let app = loaded(Mode::Encode, "ПРИВІТ");
+        assert_eq!(
+            app.transmission_plan(),
+            build_signal_plan_in("ПРИВІТ", Alphabet::Ukrainian)
+        );
+    }
+}
