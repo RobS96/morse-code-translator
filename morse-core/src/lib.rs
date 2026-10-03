@@ -596,11 +596,77 @@ pub fn build_signal_plan(text: &str) -> Vec<Signal> {
 /// word gaps in a row or a leading or trailing one. A letter gap follows
 /// every letter but the last: the plan ends on the final dot or dash.
 pub fn build_signal_plan_in(text: &str, alphabet: Alphabet) -> Vec<Signal> {
+    plan_words(encode_words(text, alphabet, &mut Vec::new()))
+}
+
+/// The result of reading Morse to send it as written: the Morse that is
+/// sent, plus what was left out of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MorseReport {
+    /// The Morse that [`build_signal_plan_from_morse`] keys, written as
+    /// [`encode`] writes Morse: codes separated by a space, words by " / ".
+    pub morse: String,
+    /// Every code that is not made only of dots and dashes and was left
+    /// out, in input order, repeats included, as it stands after
+    /// look-alike symbols are rewritten (see [`decode`]).
+    pub skipped: Vec<String>,
+}
+
+/// The Morse words `morse` is sent as, each a list of codes, read as
+/// [`decode_lossy_report_in`] reads them: look-alikes rewritten, words
+/// split at "/", codes at whitespace. A code that holds anything but dots
+/// and dashes is appended to `skipped` instead; a word left with no codes
+/// is left out entirely rather than sent as an empty word.
+fn morse_words<'a>(morse: &'a str, skipped: &mut Vec<String>) -> Vec<Vec<&'a str>> {
+    morse
+        .split('/')
+        .map(|word| {
+            word.split_whitespace()
+                .filter(|code| {
+                    let keyable = code.chars().all(|c| matches!(c, '.' | '-'));
+                    if !keyable {
+                        skipped.push(code.to_string());
+                    }
+                    keyable
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter(|codes| !codes.is_empty())
+        .collect()
+}
+
+/// [`build_signal_plan_from_morse`], also reporting the Morse that is sent
+/// and the codes that were left out because they are not dots and dashes.
+pub fn morse_lossy_report(morse: &str) -> MorseReport {
+    let mut skipped = Vec::new();
+    let morse = morse_words(&normalize_morse(morse), &mut skipped)
+        .iter()
+        .map(|codes| codes.join(" "))
+        .collect::<Vec<_>>()
+        .join(" / ");
+    MorseReport { morse, skipped }
+}
+
+/// Turn Morse into a signal plan exactly as written, without decoding it
+/// first: every code is keyed as its own dots and dashes, whether or not
+/// any alphabet has a letter for it (so `----` is four dashes, not the
+/// `-.-. ....` of the CH it decodes to in Latin). Morse is read as
+/// [`decode`] reads it: the same look-alike symbols are accepted, codes are
+/// separated by whitespace and words by "/". A code holding anything but
+/// dots and dashes cannot be keyed and is left out; use
+/// [`morse_lossy_report`] to learn which. Gaps follow the same rules as in
+/// [`build_signal_plan_in`], so the plan of what [`encode_in`] wrote is the
+/// plan of the text it was written from.
+pub fn build_signal_plan_from_morse(morse: &str) -> Vec<Signal> {
+    plan_words(morse_words(&normalize_morse(morse), &mut Vec::new()))
+}
+
+/// The signal plan of Morse words given as lists of codes: a letter gap
+/// between codes, a letter gap and a word gap between words, nothing
+/// before the first symbol or after the last.
+fn plan_words(words: Vec<Vec<&str>>) -> Vec<Signal> {
     let mut plan = Vec::new();
-    for (i, codes) in encode_words(text, alphabet, &mut Vec::new())
-        .into_iter()
-        .enumerate()
-    {
+    for (i, codes) in words.into_iter().enumerate() {
         if i != 0 {
             plan.push(Signal::LetterGap);
             plan.push(Signal::WordGap);
@@ -1456,6 +1522,98 @@ mod tests {
                 Signal::Dot,
             ]
         );
+    }
+
+    #[test]
+    fn morse_plan_keys_exactly_the_codes_written() {
+        use Signal::{Dash, Dot, LetterGap, WordGap};
+        // `----` decodes to CH in Latin, but is played as the four dashes
+        // written, not as the `-.-. ....` of CH.
+        assert_eq!(
+            build_signal_plan_from_morse("---- / .-"),
+            vec![Dash, Dash, Dash, Dash, LetterGap, WordGap, Dot, Dash]
+        );
+        assert_ne!(
+            build_signal_plan_from_morse("----"),
+            build_signal_plan_in(&decode("----"), Alphabet::Latin)
+        );
+        // A code no alphabet knows still has its tones.
+        assert_eq!(decode("..--..--"), "");
+        assert_eq!(
+            build_signal_plan_from_morse("..--..-- ."),
+            vec![Dot, Dot, Dash, Dash, Dot, Dot, Dash, Dash, LetterGap, Dot]
+        );
+        // A fused prosign is one letter.
+        assert_eq!(
+            build_signal_plan_from_morse(".-.-. ."),
+            build_signal_plan("<AR>E")
+        );
+        assert_eq!(build_signal_plan_from_morse(""), vec![]);
+    }
+
+    #[test]
+    fn morse_plan_matches_the_text_plan_of_what_encode_wrote() {
+        for (text, alphabet) in [
+            ("SOS", Alphabet::Latin),
+            ("PARIS PARIS E", Alphabet::Latin),
+            ("CQ DE W1AW <KN>", Alphabet::Latin),
+            ("SOS<SK> E", Alphabet::Latin),
+            ("ПРИВІТ СВІТ", Alphabet::Ukrainian),
+            ("שלום עולם", Alphabet::Hebrew),
+            ("한글", Alphabet::Korean),
+        ] {
+            let morse = encode_in(text, alphabet);
+            assert_eq!(
+                build_signal_plan_from_morse(&morse),
+                build_signal_plan_in(text, alphabet),
+                "{text:?} as {morse:?}"
+            );
+            let report = morse_lossy_report(&morse);
+            assert_eq!(report.morse, morse, "{text:?}");
+            assert!(report.skipped.is_empty(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn morse_plan_reads_morse_as_decode_does() {
+        // The same look-alikes and invisible characters as decode.
+        for (typed, plain) in [
+            ("··· −−− ··· | … ——— …", "... --- ... / ... --- ..."),
+            ("._ _...", ".- -..."),
+            ("\u{FEFF}... \u{200B}---", "... ---"),
+            // Any whitespace separates letters; empty words are skipped,
+            // so no gap is doubled and none leads or trails.
+            (" .-\n-...\t", ".- -..."),
+            ("/ .- // / -... /", ".- / -..."),
+            (".-/-...", ".- / -..."),
+        ] {
+            assert_eq!(
+                build_signal_plan_from_morse(typed),
+                build_signal_plan_from_morse(plain),
+                "{typed:?}"
+            );
+            assert_eq!(morse_lossy_report(typed).morse, plain, "{typed:?}");
+        }
+        for typed in ["/", "//", " ", "/ hello /"] {
+            assert_eq!(build_signal_plan_from_morse(typed), vec![], "{typed:?}");
+        }
+    }
+
+    #[test]
+    fn morse_plan_leaves_out_codes_that_are_not_dots_and_dashes() {
+        // Nothing in them can be keyed, so they are left out whole: the
+        // dots and dashes of `.x-` alone would key the letter A.
+        let report = morse_lossy_report(".- hello .x- / SOS / -...");
+        assert_eq!(report.morse, ".- / -...");
+        assert_eq!(report.skipped, vec!["hello", ".x-", "SOS"]);
+        assert_eq!(
+            build_signal_plan_from_morse(".- hello .x- / SOS / -..."),
+            build_signal_plan_from_morse(".- / -...")
+        );
+        // Codes are reported as they stand after look-alikes are read.
+        assert_eq!(morse_lossy_report("·x_").skipped, vec![".x-"]);
+        // Unrecognised codes are Morse all the same: nothing is left out.
+        assert!(morse_lossy_report("..--..-- ........-").skipped.is_empty());
     }
 
     #[test]

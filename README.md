@@ -138,6 +138,23 @@ so it arrives as one argument. Morse that starts with a dash (`morse decode
 with its value missing, or a second piece of text is a usage error (exit
 code 1).
 
+Text that is spelt like an option, such as `-h` or `--strict`, goes after
+`--`, which ends the options: everything after it is the text, and several
+arguments after it are joined with single spaces. `--` is also the Morse
+for M, so it ends the options only after the command, only the first time,
+and only when something follows it:
+
+```bash
+morse encode -- -h          # -> -....- ....  (the text "-h", not the help)
+morse decode -- ".- -..."   # -> AB
+morse decode --             # -> M  (nothing follows, so it is the text)
+morse decode -- --          # -> M  (the first ends the options)
+morse decode -- -- --       # -> MM (the text is "-- --")
+morse decode -a ru -- --.-- # -> Ъ
+```
+
+An option's value is taken first, so `-o --` names a file called `--`.
+
 With no text argument, the text is read from standard input, unless that is
 a terminal. A terminal, or standard input with nothing on it, is the usual
 `missing text` usage error. `-` is not a stand-in for standard input: it is
@@ -252,6 +269,20 @@ Characters with no Morse code are left out and named on stderr as for
 `encode`, and `--strict` turns that into exit code 2; the file is written
 either way. One file holds at most 172.8 million samples, about 65 minutes;
 a longer transmission is refused (exit code 3).
+
+**Sending Morse as written.** With `--morse`, `transmit` and `wav` take
+Morse instead of text and send it exactly as written, code for code, read
+as `decode` reads it (the same look-alike symbols, `/` between words). It
+is not decoded first, so a code that no alphabet knows is sent too, and
+`----` is four dashes rather than the `-.-. ....` of the CH it decodes to;
+`-a` has no effect. A code that holds anything but dots and dashes cannot
+be sent: it is left out and named on stderr, and `--strict` (for `wav`)
+turns that into exit code 2.
+
+```bash
+morse transmit --morse "---- / .-" --wpm 20
+morse wav --morse "..--..-- / -.-.-" -o drill.wav
+```
 
 ## Alphabets
 
@@ -397,7 +428,10 @@ cargo run --release -p morse-gui
 - Hit **▶ Transmit** — the lamp flashes and a tone plays in sync. **⏹ Stop**
   ends it early. The **Tone** (300 to 1200 Hz) and **Volume** sliders apply
   from the next transmission. With no sound output available, the lamp
-  still flashes and the status line says so.
+  still flashes and the status line says so. On the **Morse → Text** tab the
+  Morse you typed is what is sent, code for code: a code the alphabet
+  does not know is still sent, and `----` is sent as typed, not as the
+  `-.-. ....` of the CH it decodes to.
 - Characters with no Morse code, and codes that are not recognised, are
   left out of the result and listed in the status line under the lamp.
 - Pick the **Alphabet** (auto-detected by default) and the interface

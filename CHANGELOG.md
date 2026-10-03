@@ -8,6 +8,26 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `morse-core`: `build_signal_plan_from_morse` builds the signal plan of
+  Morse exactly as written, without decoding it first: every code is
+  keyed as its own dots and dashes, whether or not an alphabet has a
+  letter for it. Morse is read as `decode` reads it (the same look-alike
+  symbols, `/` between words). `morse_lossy_report` returns the Morse that
+  is sent and the codes left out because they hold something other than
+  dots and dashes (`MorseReport`).
+- `morse transmit --morse` and `morse wav --morse` send Morse as written
+  instead of encoding text: `morse transmit --morse "---- / .-"`. A code
+  that is not dots and dashes is left out and named on stderr, and
+  `--strict` (for `wav`) exits with code 2 for it.
+- `--` after the command ends the options, so text that looks like an
+  option can be given: `morse encode -- -h` encodes `-h` instead of
+  printing the help, and `morse encode -- --strict` encodes `--strict`.
+  Every argument after it is the text, several joined with single spaces.
+  As `--` is also the Morse for M, only the first `--` after the command
+  ends the options, and only if something follows it: `morse decode --`
+  still decodes M, `morse decode -- --` decodes M, `morse decode -- -- --`
+  decodes `-- --` (MM), and `morse decode -a ru -- "--.--"`, a usage error
+  before, decodes Ъ.
 - `-a cyrillic` (`ru`) decodes `--.--` as Ъ, the code the table in
   Wikipedia's "Russian Morse code" gives the letter; the code used to be
   left out as unrecognised. Ъ is still sent with the code of Ь (`-..-`),
@@ -53,6 +73,11 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `morse-gui`: **Transmit** on the Morse → Text tab sends the Morse that
+  was typed. It used to decode it and send the text again, so a code was
+  replaced wherever the decoded letter has a code of its own (`----`, CH
+  in Latin, was sent as `-.-. ....`) and a code the alphabet does not
+  know was silently left out of the transmission.
 - A byte order mark and other invisible format characters are ignored by
   both `encode` and `decode`: U+FEFF, the soft hyphen (U+00AD),
   U+200B to U+200F, U+202A to U+202E and U+2060 to U+2069. A file or
