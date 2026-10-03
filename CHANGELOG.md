@@ -6,6 +6,20 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- A release is published only from a signed, annotated tag that GitHub
+  verifies, on a commit that is on `main`, and only when the tag, the crate
+  version, the version `morse --version` prints and the changelog heading
+  agree. A tag that fails any of these publishes nothing.
+- The SBOMs in each archive are generated in a job of their own, so the
+  jobs that build the release binaries run nothing but the toolchain and
+  the locked dependency tree. The release archives are built on named
+  runner images (Ubuntu 24.04, macOS 26, Windows Server 2025).
+- The documented `gh attestation verify` command names the release
+  workflow (`--signer-workflow`), so an attestation from any other
+  workflow in the repository is not accepted.
+
 ## [0.5.0] - 2026-10-02
 
 ### Added

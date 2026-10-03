@@ -7,7 +7,7 @@ so the usual Rust workflow applies.
 
 ```
 morse-core/   pure encode/decode/timing logic — no I/O, fully unit tested
-morse-cli/    terminal UI (encode / decode / transmit)
+morse-cli/    terminal UI (encode / decode / transmit / wav)
 morse-gui/    cross-platform desktop GUI (eframe + rodio)
 ```
 
@@ -63,6 +63,23 @@ CI also runs these, which matter mostly when dependencies change:
 - PR description should say *what* changed and *why*, and link any related
   issue.
 - Update `CHANGELOG.md` under `[Unreleased]` for any user-facing change.
+
+## Releasing (maintainer)
+
+1. In one PR: set the new version in `Cargo.toml` (`[workspace.package]`)
+   and in the `morse-core` dependency lines of `morse-cli/Cargo.toml` and
+   `morse-gui/Cargo.toml`, run `cargo build` so `Cargo.lock` follows, and
+   rename the `[Unreleased]` heading in `CHANGELOG.md` to
+   `[x.y.z] - YYYY-MM-DD`.
+2. After it is merged and `main` is green, push a signed annotated tag
+   `vx.y.z` on that merge commit.
+3. The tag run builds the archives, checks that the tag, the crate version,
+   the version the binary prints and the changelog heading agree, checks
+   that the tag is signed and on `main`, and then publishes.
+
+Releases are immutable and release tags cannot be moved or deleted, so a
+mistake is fixed by the next version. The checks in step 3 run before
+anything is public; a tag that fails them publishes nothing.
 
 ## Reporting bugs / requesting features
 
