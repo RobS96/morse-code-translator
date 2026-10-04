@@ -101,6 +101,20 @@ user-id = 980 # Sebastian Thiel (Byron)
 start = "2023-08-15"
 end = "2027-09-12"
 
+[[trusted.getrandom]]
+criteria = "safe-to-deploy"
+user-id = 39279 # Joe Richey (josephlr)
+start = "2020-09-10"
+end = "2027-10-03"
+notes = "Trusted-publisher policy entry, NOT a code audit: added 2026-10-04 by a Claude Code session at Robert Shubert's request (Q4 cargo-vet backlog, ~/security/cargo-vet/backlog-triage-2026-10-03.md). Long-standing maintainer / official project release pipeline of a widely used security-relevant crate (publisher checked on crates.io); revisit at end date."
+
+[[trusted.getrandom]]
+criteria = "safe-to-deploy"
+trusted-publisher = "github:rust-random/getrandom"
+start = "2025-12-27"
+end = "2027-10-03"
+notes = "Trusted-publisher policy entry, NOT a code audit: added 2026-10-04 by a Claude Code session at Robert Shubert's request (Q4 cargo-vet backlog, ~/security/cargo-vet/backlog-triage-2026-10-03.md). Long-standing maintainer / official project release pipeline of a widely used security-relevant crate (publisher checked on crates.io); revisit at end date."
+
 [[trusted.hashbrown]]
 criteria = "safe-to-deploy"
 user-id = 2915 # Amanieu d'Antras (Amanieu)
@@ -154,6 +168,13 @@ criteria = "safe-to-deploy"
 user-id = 1139 # Manish Goregaokar (Manishearth)
 start = "2024-07-01"
 end = "2027-09-12"
+
+[[trusted.idna_adapter]]
+criteria = "safe-to-deploy"
+user-id = 4484 # Henri Sivonen (hsivonen)
+start = "2024-07-03"
+end = "2027-10-03"
+notes = "Trusted-publisher policy entry, NOT a code audit: added 2026-10-04 by a Claude Code session at Robert Shubert's request (Q4 cargo-vet backlog, ~/security/cargo-vet/backlog-triage-2026-10-03.md). Long-standing maintainer / official project release pipeline of a widely used security-relevant crate (publisher checked on crates.io); revisit at end date."
 
 [[trusted.jobserver]]
 criteria = "safe-to-deploy"
