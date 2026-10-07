@@ -16,6 +16,13 @@ versioning follows [Semantic Versioning](https://semver.org/).
   (`dependency-review.yml`) blocks a pull request that adds a
   known-vulnerable dependency or a licence outside `deny.toml`'s
   allow-list; `CODEOWNERS` names the maintainer.
+- `morse-core`'s text and Morse parsers, signal planner and audio
+  scheduler are fuzzed with libFuzzer (`fuzz/`, `fuzz.yml`): one minute
+  per target on every change, fifteen minutes weekly. The invariants
+  (`morse-core/src/fuzzing.rs`) also run over several hundred fixed
+  inputs in `cargo test`.
+- `SECURITY.md` links the private vulnerability-reporting form and
+  commits to a first response within a week.
 - `morse-core`: `build_signal_plan_from_morse` builds the signal plan of
   Morse exactly as written, without decoding it first: every code is
   keyed as its own dots and dashes, whether or not an alphabet has a

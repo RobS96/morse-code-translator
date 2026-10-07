@@ -10,6 +10,8 @@ use std::sync::LazyLock;
 mod alphabets;
 mod audio;
 pub use alphabets::{Alphabet, normalize_input};
+#[doc(hidden)]
+pub mod fuzzing;
 pub use audio::{
     MAX_FREQUENCY_HZ, MAX_RENDER_SAMPLES, MAX_SAMPLE_RATE, MIN_FREQUENCY_HZ, MIN_SAMPLE_RATE,
     RenderError, Tone, render_samples, render_schedule, write_wav,
