@@ -8,6 +8,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Each release attaches its build provenance attestation as a Sigstore
+  bundle (`morse-<version>-provenance.sigstore.json`), for
+  `gh attestation verify --bundle`.
+- OpenSSF Scorecard runs weekly and on every push to `main`
+  (`scorecard.yml`), publishing to scorecard.dev; dependency review
+  (`dependency-review.yml`) blocks a pull request that adds a
+  known-vulnerable dependency or a licence outside `deny.toml`'s
+  allow-list; `CODEOWNERS` names the maintainer.
 - `morse-core`: `build_signal_plan_from_morse` builds the signal plan of
   Morse exactly as written, without decoding it first: every code is
   keyed as its own dots and dashes, whether or not an alphabet has a

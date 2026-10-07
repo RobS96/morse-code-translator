@@ -1,6 +1,7 @@
 # Morse Code Translator
 
 [![CI](https://github.com/RobS96/morse-code-translator/actions/workflows/ci.yml/badge.svg)](https://github.com/RobS96/morse-code-translator/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/RobS96/morse-code-translator/badge)](https://scorecard.dev/viewer/?uri=github.com/RobS96/morse-code-translator)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](https://www.rust-lang.org)
 
@@ -96,8 +97,11 @@ gh attestation verify <archive> --repo RobS96/morse-code-translator \
 ```
 
 Without `--signer-workflow`, an attestation from any workflow in the
-repository would be accepted. A release is only published from a signed
-tag on a commit that is on `main`.
+repository would be accepted. The same attestation is attached to each
+release as `morse-<version>-provenance.sigstore.json`; add
+`--bundle <that file>` to verify against it instead of fetching the
+attestation from GitHub. A release is only published from a signed tag
+on a commit that is on `main`.
 
 Things to know before running a downloaded binary:
 
@@ -465,7 +469,11 @@ cargo test --locked --workspace
 CI (`.github/workflows/ci.yml`) runs all three on **Ubuntu, macOS, and
 Windows** for every push/PR, along with `cargo deny check` and `cargo vet
 check`. It also builds the per-OS release archives on every run, and
-publishes them when a release tag is pushed.
+publishes them when a release tag is pushed. A pull request that adds a
+dependency with a known vulnerability or a licence outside `deny.toml`'s
+allow-list is blocked by `dependency-review.yml`, and
+`scorecard.yml` grades the repository's own practices weekly
+([OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/RobS96/morse-code-translator)).
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full workflow, and
 [`CHANGELOG.md`](CHANGELOG.md) for release history.
