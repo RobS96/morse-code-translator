@@ -6,6 +6,10 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- OpenSSF Best Practices badge (passing): https://www.bestpractices.dev/projects/15285
+
 ## [0.6.0] - 2026-10-07
 
 ### Added
