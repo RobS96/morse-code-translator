@@ -13,4 +13,4 @@ name = "morse"
 path = "src/main.rs"
 
 [dependencies]
-morse-core = { path = "../morse-core", version = "0.5.0" }
+morse-core = { path = "../morse-core", version = "0.6.0" }

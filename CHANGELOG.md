@@ -6,6 +6,8 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-07
+
 ### Added
 
 - Each release attaches its build provenance attestation as a Sigstore
