@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/RobS96/morse-code-translator/actions/workflows/ci.yml/badge.svg)](https://github.com/RobS96/morse-code-translator/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/RobS96/morse-code-translator/badge)](https://scorecard.dev/viewer/?uri=github.com/RobS96/morse-code-translator)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15285/badge)](https://www.bestpractices.dev/projects/15285)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](https://www.rust-lang.org)
 
