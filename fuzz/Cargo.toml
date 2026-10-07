@@ -1,0 +1,39 @@
+[package]
+name = "morse-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+morse-core = { path = "../morse-core" }
+
+# A workspace of its own: the fuzz targets build only with nightly and
+# cargo-fuzz, and stay out of the release build and its supply-chain gates.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "text"
+path = "fuzz_targets/text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "morse"
+path = "fuzz_targets/morse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "schedule"
+path = "fuzz_targets/schedule.rs"
+test = false
+doc = false
+bench = false

@@ -59,7 +59,11 @@ It's hardened as follows:
   `morse-<version>-provenance.sigstore.json` for `--bundle` verification.
 - Every pull request runs GitHub's dependency review (known-vulnerable
   or wrongly licensed additions fail it), and OpenSSF Scorecard grades
-  the repository weekly with the results published to scorecard.dev.
+  the repository weekly with the results published to
+  [scorecard.dev](https://scorecard.dev/viewer/?uri=github.com/RobS96/morse-code-translator).
+- `morse-core`'s text and Morse parsers, the signal planner and the audio
+  scheduler are fuzzed with libFuzzer (`fuzz/`, `fuzz.yml`): a minute per
+  target on every change, fifteen minutes weekly.
 - A release is published only from a signed, annotated tag that GitHub
   verifies, on a commit that is already on `main`; the workflow checks
   both before it publishes, and that the tag matches the version the
@@ -68,11 +72,16 @@ It's hardened as follows:
 If you still find a security issue:
 
 1. **Do not** open a public issue.
-2. Use GitHub's **"Report a vulnerability"** button under the Security tab
-   (private security advisory), or contact the maintainer directly via
-   their GitHub profile.
-3. Include steps to reproduce and the potential impact.
+2. Report it privately through
+   [GitHub private vulnerability reporting](https://github.com/RobS96/morse-code-translator/security/advisories/new)
+   (the **"Report a vulnerability"** button under the
+   [Security tab](https://github.com/RobS96/morse-code-translator/security)),
+   or contact the maintainer through their
+   [GitHub profile](https://github.com/RobS96).
+3. Include steps to reproduce, the version (`morse --version`) and the
+   potential impact.
 
-You should get an acknowledgement within a few days. Once a fix is ready,
-it will be released and credited in `CHANGELOG.md` (unless you'd prefer to
-remain anonymous).
+You should get a first response within a week. Once a fix is released,
+the advisory is published and credited in
+[`CHANGELOG.md`](https://github.com/RobS96/morse-code-translator/blob/main/CHANGELOG.md)
+unless you prefer to remain anonymous.

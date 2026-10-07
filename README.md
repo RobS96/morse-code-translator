@@ -474,6 +474,10 @@ dependency with a known vulnerability or a licence outside `deny.toml`'s
 allow-list is blocked by `dependency-review.yml`, and
 `scorecard.yml` grades the repository's own practices weekly
 ([OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/RobS96/morse-code-translator)).
+`fuzz.yml` runs libFuzzer over `morse-core`'s parsers, planner and
+scheduler (`fuzz/`, invariants in `morse-core/src/fuzzing.rs`) for a
+minute per target on every change and fifteen minutes weekly; locally,
+`cargo +nightly fuzz run --fuzz-dir fuzz text` (needs `cargo-fuzz`).
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full workflow, and
 [`CHANGELOG.md`](CHANGELOG.md) for release history.
