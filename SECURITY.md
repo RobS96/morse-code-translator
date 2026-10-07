@@ -55,6 +55,11 @@ It's hardened as follows:
   build provenance attestations; verify a download with
   `gh attestation verify <file> --repo RobS96/morse-code-translator
   --signer-workflow RobS96/morse-code-translator/.github/workflows/ci.yml`.
+  The attestation is also attached to the release as
+  `morse-<version>-provenance.sigstore.json` for `--bundle` verification.
+- Every pull request runs GitHub's dependency review (known-vulnerable
+  or wrongly licensed additions fail it), and OpenSSF Scorecard grades
+  the repository weekly with the results published to scorecard.dev.
 - A release is published only from a signed, annotated tag that GitHub
   verifies, on a commit that is already on `main`; the workflow checks
   both before it publishes, and that the tag matches the version the
