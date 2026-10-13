@@ -9,6 +9,29 @@ versioning follows [Semantic Versioning](https://semver.org/).
 ### Added
 
 - OpenSSF Best Practices badge (passing): https://www.bestpractices.dev/projects/15285
+- Workflow lint: [zizmor](https://docs.zizmor.sh) audits the GitHub Actions
+  workflows on every change under `.github/` and weekly
+  (`workflow-lint.yml`), fails the pull request on a finding and reports to
+  code scanning. Its first run found what it is for: the `test` job
+  restored a build cache on release-tag runs as well; a tag's checks now
+  build from the locked tree alone.
+- `cargo doc` runs in CI with warnings as errors, private items included.
+- Weekly fuzzing keeps its corpus between runs (GitHub's cache), so each
+  run starts where the last one stopped instead of from the seeds.
+- `cargo deny check advisories` runs on a schedule (`advisories.yml`), twice
+  a week, so a new RustSec advisory is seen without waiting for a push.
+- Test coverage (lines, regions, functions; cargo-llvm-cov) is measured on
+  every change and weekly and reported in the job summary (`coverage.yml`).
+  Reported, not gated.
+
+### Changed
+
+- CI cancels a pull request's superseded run when the branch is pushed
+  again; runs on `main` and on tags are never cancelled.
+- Dependabot groups minor and patch Cargo bumps into one weekly pull request
+  (a major bump still gets its own), groups the Actions bumps, and keeps the
+  hash-pinned PyPI tools CI installs current
+  (`.github/workflow-tools/requirements.txt`).
 
 ## [0.6.0] - 2026-10-07
 
