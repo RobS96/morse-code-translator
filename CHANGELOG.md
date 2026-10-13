@@ -23,8 +23,24 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - Test coverage (lines, regions, functions; cargo-llvm-cov) is measured on
   every change and weekly and reported in the job summary (`coverage.yml`).
   Reported, not gated.
+- Each release also attaches the CycloneDX SBOMs of `morse` and `morse-gui`
+  for every platform as files of their own
+  (`morse-<version>-<platform>-<crate>.cdx.json`), listed in the platform's
+  `SHA256SUMS` and covered by the build provenance attestation.
+- `BUILD-INFO.txt` in every archive: repository, tag, commit, platform,
+  runner image, `rustc -vV`, cargo version and the SHA-256 of the
+  `Cargo.lock` the build used.
+- Release notes are the version's CHANGELOG section, followed by the
+  verification instructions.
+- Before a release is published, the packaged CLI is also run where it was
+  not built: the x86_64 slice of the universal binary on an Intel Mac, a
+  newer glibc (Ubuntu 26.04) and Windows Server 2022.
 
 ### Changed
+
+- The Linux binaries are built on Ubuntu 22.04 and need glibc 2.35 or newer
+  (was Ubuntu 24.04, glibc 2.39), so they run on Ubuntu 22.04+, Debian 12+,
+  current Fedora and Arch.
 
 - CI cancels a pull request's superseded run when the branch is pushed
   again; runs on `main` and on tags are never cancelled.

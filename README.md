@@ -72,9 +72,12 @@ Tagged releases publish binaries for Windows, macOS (universal), and
 Linux under
 [Releases](https://github.com/RobS96/morse-code-translator/releases) —
 no Rust toolchain needed. Each archive carries a CycloneDX SBOM per crate
-under `sbom/`, and each platform has a `SHA256SUMS-<platform>.txt` beside
-it. To check a download, run these in the folder holding the archive and
-its checksum file:
+under `sbom/` and a `BUILD-INFO.txt` naming the commit, toolchain and
+runner image that built it; the SBOMs of the two binaries are also
+attached on their own (`morse-<version>-<platform>-<crate>.cdx.json`),
+and each platform has a `SHA256SUMS-<platform>.txt` covering its archive
+and SBOMs. To check a download, run these in the folder holding the
+archive and its checksum file:
 
 ```bash
 # Linux
@@ -111,9 +114,10 @@ Things to know before running a downloaded binary:
   they carry the quarantine flag a browser download adds; after verifying
   the archive as above, clear it with
   `xattr -d com.apple.quarantine morse morse-gui`.
-- **Linux:** the binaries are built on Ubuntu 24.04 and need glibc 2.39 or
-  newer. On an older distribution, build from source. `morse-gui` also needs the X11/xkbcommon, OpenGL and
-  ALSA runtime libraries, which desktop installs already have.
+- **Linux:** the binaries are built on Ubuntu 22.04 and need glibc 2.35 or
+  newer (Ubuntu 22.04+, Debian 12+, current Fedora and Arch). On an older
+  distribution, build from source. `morse-gui` also needs the X11/xkbcommon,
+  OpenGL and ALSA runtime libraries, which desktop installs already have.
 - **Windows:** SmartScreen may warn about an unsigned download.
 
 Alternatively, install just the CLI straight from a clone:
