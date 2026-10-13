@@ -43,9 +43,19 @@ CI also runs these, which matter mostly when dependencies change:
   dependency fails `cargo vet` until it is covered by an audit or an
   exemption in `supply-chain/`; say in the PR why the dependency is needed
   and a maintainer will handle that part.
+- **Docs**: `RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --no-deps --document-private-items`.
+  A doc link to an item that no longer exists fails CI.
+- **Workflow lint**: a change under `.github/` is audited with
+  [zizmor](https://docs.zizmor.sh) (`workflow-lint.yml`), which fails the PR
+  on any finding at its default persona. To see the same findings locally:
+  `pip install zizmor` (or `cargo install --locked zizmor`), then
+  `zizmor .github/workflows`.
 - **Minimum supported Rust**: `morse-core` and `morse-cli` must build on
   Rust 1.88, `morse-gui` on 1.95. Avoid newer language or standard-library
-  features, or raise `rust-version` in the same PR and say why.
+  features, or raise `rust-version` in the same PR and say why. The minimum
+  rises only in a minor release, only when a dependency or a feature the
+  project needs requires it, and never above the second-most-recent stable
+  Rust release.
 - **Packaging**: the release archives are built on every PR, so a change
   that breaks them shows up there.
 
