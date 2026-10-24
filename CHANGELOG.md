@@ -49,6 +49,13 @@ versioning follows [Semantic Versioning](https://semver.org/).
   hash-pinned PyPI tools CI installs current
   (`.github/workflow-tools/requirements.txt`).
 
+### Security
+
+- clipboard-win 5.4.3 (from 5.4.1, which was yanked). The Windows desktop
+  app's clipboard goes through it (eframe, arboard), and 5.4.3 bounds-checks
+  an HTML clipboard fragment instead of copying past the end of a malformed
+  one. Other platforms do not build it.
+
 ## [0.6.0] - 2026-10-07
 
 ### Added
