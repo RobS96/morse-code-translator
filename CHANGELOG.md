@@ -49,6 +49,18 @@ versioning follows [Semantic Versioning](https://semver.org/).
   hash-pinned PyPI tools CI installs current
   (`.github/workflow-tools/requirements.txt`).
 
+### Security
+
+- clipboard-win 5.4.3 (from 5.4.1, which was yanked). The Windows desktop
+  app's clipboard goes through it (eframe, arboard), and 5.4.3 bounds-checks
+  an HTML clipboard fragment instead of copying past the end of a malformed
+  one. Other platforms do not build it.
+- async-executor 1.14.1 (from 1.14.0, which was yanked). 1.14.0 could free
+  the executor's state while a task's waker was still firing as the
+  executor shut down (a use-after-free, smol-rs/async-executor#164), and
+  1.14.1 reverts that change. Only the Linux desktop app builds it, through
+  its accessibility support (accesskit, zbus).
+
 ## [0.6.0] - 2026-10-07
 
 ### Added
