@@ -311,6 +311,11 @@ criteria = "safe-to-deploy"
 version = "0.2.4"
 criteria = "safe-to-deploy"
 
+[[exemptions.form_urlencoded]]
+version = "1.2.3"
+criteria = "safe-to-deploy"
+notes = "Dependency of url 2.5.9 (RUSTSEC-2026-0592), NOT a code audit: added 2026-11-23 by a Claude Code session (nightly fix). Session diff-read 1.2.2 -> 1.2.3: Serializer::for_suffix clamps an out-of-range start_position instead of panicking; percent-encoding requirement ^2.3.2; no unsafe/build.rs/I/O. Remove when an imported audit covers it (cargo vet prune)."
+
 [[exemptions.futures-lite]]
 version = "2.6.1"
 criteria = "safe-to-deploy"
